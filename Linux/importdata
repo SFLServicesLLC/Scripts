@@ -1,0 +1,352 @@
+#!/bin/bash
+#Type:Utility
+#########################################################
+# Script:
+#
+# This is to import data from the datadump script
+# 
+# Created
+# steve.ling@sflservicesllc.com
+#########################################################
+# Revision
+#
+# 2025-01-26 steve.ling@sflservicesllc.com Initial revision
+# 2025-06-05 steve.ling@sflservicesllc.com Added a section to restrict the PLANTID for the environment
+#
+#########################################################
+#
+# Environment:
+DBHOST=localhost
+SITENAME=$PLANTID #`pwd|cut -d"_" -f2`
+MYSQLUSER=kiwisql
+MYSQLPASS=800486kiwi
+#
+# Variables
+SITE=/KIWI/services/sites/$SITENAME/current
+CONF=/KIWI/services/sites/$SITENAME/current/conf
+#
+# Define colors
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[1;36m'
+NC='\033[0m' # No Color
+BOLD='\033[1m'
+FLASH='\033[5m'
+#
+# Define log file
+LOG_FILE="importdata$(date +"%Y%m%d_%H%M%S").log"
+
+# Logging function
+log() {
+  local message="$1"
+  local level="$2" # Optional: INFO, WARNING, ERROR
+  local color="$3"
+
+  # Timestamp
+  timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+
+  # Log message with level and timestamp
+  echo -e "${color}${message}${NC}" | tee -a "$LOG_FILE"
+  echo "[${timestamp}] [${level}] ${message}" | logger
+}
+#
+# Display banner
+banner(){
+clear
+log "========================================" "INFO" "${GREEN}${BOLD}"
+log "|  Welcome to the Import Data Process  |" "INFO" "${GREEN}${BOLD}"
+log "|                                      |" "INFO" "${GREEN}${BOLD}"
+log "| You are in the server:               |" "INFO" "${GREEN}${BOLD}"
+log "  `hostname` " "INFO" "${YELLOW}${BOLD}"
+log "========================================" "INFO" "${GREEN}${BOLD}"
+echo ""
+}
+#
+checkVariables() {
+if [ "$CONF" = "" ];then
+        cd $SITE
+        cd ../conf 
+        CONF=`pwd`
+        log "Looked at SITE to get path to set CONF" "INFO" "${GREEN}${BOLD}${FLASH}"
+fi
+if [ "$CONF" = "" ];then
+        log "CONF not defined" "ERROR" "${RED}${BOLD}${FLASH}"
+        return 1
+fi
+#
+if [ "$MAPDATA" = "" ];then
+        MAPDATA=$DATA
+        log "Setting the MAPDATA variable to $MAPDATA" "INFO" "${GREEN}${BOLD}${FLASH}"
+        return 0
+fi
+#
+if [ "$MAPDATA" = "" ];then
+        log "DATA variable is not defined" "ERROR" "${RED}${BOLD}${FLASH}"
+        return 1
+fi
+#
+if [ "$MAPDATA" = "" ];then
+        echo -e "Exiting as do not know where classic MAP dataset lives.  Please define MAPDATAA" "ERROR" "${RED}${BOLD}${FLASH}"
+        return 1
+fi
+}
+#
+# Menu function
+menu() {
+  log "Working with the $PLANTID environment" "INFO" ${GREEN}${BOLD}
+  log "Changing to the $HOME folder" "INFO" ${YELLOW}${BOLD}
+  cd $HOME
+  if [ -f $PLANTID.????????.dump.tar ];then
+  DATASETS=`find $PLANTID.????????.dump.tar`
+  PS3="Select importdata data for $PLANTID : "
+  select DATASET in $DATASETS
+    do
+       if [ -z "$DATASET" ];then
+          DATASET=$DATASETS
+       fi
+       CODE=`echo "$DATASET" | cut -d'.' -f2`
+       break
+    done
+  else
+     log "No import files exist for the $PLANTID environment"
+     log "If you recieved an error you can always scroll up to view" "INFO" "${BLUE}${BOLD}"
+     log "Exiting" "INFO" "${YELLOW}${BOLD}"
+     sleep 3
+     exit 1
+  fi
+}
+#
+processFile() {
+log "Changing to the home folder" "INFO" "${BLUE}"
+cd $HOME
+
+DUMPNAME=$CODE
+
+log "Setting the file name" "INFO" "${BLUE}"
+if [ -f $SITENAME.$DUMPNAME.dump.tar ];then
+        log "Dump $SITENAME.$DUMPNAME.dump.tar found" "INFO" "${GREEN}${BOLD}"
+else
+        log "File $SITENAME.$DUMPNAME.dump.tar not found on" "ERROR" "${RED}${BOLD}"
+        return 1
+fi
+#
+# Extract dump file
+#
+log "Extracting datasets from $HOME directory" "INFO" "${GREEN}${BOLD}"
+log "Extracting dump file $SITENAME.$DUMPNAME.dump.tar" "INFO" "${BLUE}${BOLD}"
+tar xf $SITENAME.$DUMPNAME.dump.tar
+#
+# Unzipping the Gzip files
+#
+log "Unzipping tar files" "INFO" "${YELLOW}${BOLD}"
+gunzip -f $SITENAME.*gz
+#
+# Stopping services
+#
+log "Stopping services $SITE/bin" "INFO" "${GREEN}${BOLD}"
+$SITE/bin/stopservers.sh > /dev/null 2>/dev/null
+#
+# Importing License
+#
+log "Looking to see if we will be extracting the licence" "INFO" "${GREEN}${BOLD}"
+LICENCE=$CONF/licence
+if [ -d "$LICENCE" ];then
+  log "The licence directory already exists" "INFO" "${GREEN}${BOLD}"
+else
+  log "The license did not exist" "INFO" "${RED}${BOLD}"
+  log "Creating the licece directory" "INFO" "${GREEN}${BOLD}"
+  mkdir -p $LICENCE
+fi
+log "Verifying if the license exists" "INFO" "${GREEN}${BOLD}"
+if [ "$(ls -A $LICENCE)" ]; then
+  log "Licence exists will not be extracting" "INFO" "${GREEN}${BOLD}"
+else
+  log "Extracting licence" "INFO" "${GREEN}${BOLD}"
+  tar xf $HOME/$SITENAME.licence.dump -C $CONF/licence
+fi
+#
+# Import Logs
+#
+log "Import LOGS files" "INFO" "${GREEN}${BOLD}"
+if [ ! -d "$SITE/logs" ];then
+        log "Creating the logs folder" "INFO" "${YELLOW}${BOLD}"
+        mkdir -p $SITE/logs
+fi
+tar xf $HOME/$SITENAME.logs.dump -C $SITE/logs --strip-components=6
+log "Imported LOGS files" "INFO" "${GREEN}${BOLD}"
+#
+# Importing Prference Bundles
+#
+log "Import Preference Bundles files" "INFO" "${GREEN}${BOLD}"
+if [ ! -d "$CONF/preferencebundles/kiwiplan" ];then
+        log "Creating the preference bundles folder" "INFO" "${YELLOW}${BOLD}"
+        mkdir -p $CONF/preferencebundles/kiwiplan
+fi 
+tar xf $HOME/$SITENAME.preferencebundles.dump -C $CONF/preferencebundles/kiwiplan --strip-components=6
+log "Imported Preference Bundles files" "INFO" "${GREEN}${BOLD}"
+#
+# Looking at the Parameter file
+#
+log "Looking to see if we will be extracting the parameters file" "INFO" "${GREEN}${BOLD}"
+if [ -f "$CONF/recentparametervalues.properties" ];then
+   log "Did not extract as the parameters file already exists" "INFO" "${GREEN}${BOLD}"
+else
+   log "Extracting the parameters file" "INFO" "${GREEN}${BOLD}"
+   tar xf $HOME/$SITENAME.parameters.dump -C $CONF/
+fi
+#
+# Restoring the databases
+#
+log "Setting the counter to 1 for the number if databases" "INFO" "${BLUE}${BOLD}"
+count=1
+DATABASECOUNT=`cat $CONF/recentparametervalues.properties|grep DBNAME |grep -v kids|grep -v "CLASSIC_DATA"|wc -l|tr -d " "`
+log "The count of VUE database read is $DATABASECOUNT" "INFO" "${GREEN}${BOLD}"
+log "We will start looping through the VUE databases" "INFO" "${GREEN}${BOLD}"
+while [ $count -le $DATABASECOUNT ];do
+
+        DATANAME=`grep DBNAME $CONF/recentparametervalues.properties |grep -v kids|grep -v "CLASSIC_DATA"|cut -d"=" -f2|head -$count|tail -1`
+        log "lookup the database called $DATANAME" "INFO" "${GREEN}${BOLD}"
+        DATABASE=`grep DBNAME $CONF/recentparametervalues.properties |grep -v kids|grep -v "CLASSIC_DATA"|cut -d"=" -f2|head -$count|tail -1|cut -d"_" -f2`
+        if [ "$DATABASE" = "csc" ];then
+                log "Setting the varliable for CSC database" "INFO" "${GREEN}${BOLD}"
+                CSC=1
+        fi
+        if [ "$DATABASE" = "pcs" ];then
+                log "Setting the varliable for PCS database" "INFO" "${GREEN}${BOLD}"
+                PCS=1
+        fi
+        if [ "$DATABASE" = "pics" ];then
+                log "Setting the varliable for PICS database" "INFO" "${GREEN}${BOLD}"
+                PICS=1
+        fi
+        if [ "$DATABASE" = "pic" ];then
+                log "Setting the varliable for PIC database" "INFO" "${GREEN}${BOLD}"
+                if [ "$PICS" -ne "1" ];then
+                   PIC=1
+                fi
+        fi
+        log "Dropping the $DATANAME database if it exists" "INFO" "${YELLOW}${BOLD}"
+        mysql -f -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS -e "DROP DATABASE IF EXISTS $DATANAME;"
+        log "Dropped the $DATANAME database" "INFO" "${GREEN}${BOLD}"
+        log "Creating the $DATANAME database" "INFO" "${YELLOW}${BOLD}"
+        mysql -f -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS -e "CREATE DATABASE $DATANAME;"
+        log "Created the $DATANAME database" "INFO" "${GREEN}${BOLD}"
+        log "Importing $SITENAME.$DATABASE.dump into the database $DATANAME" "INFO" "${YELLOW}${BOLD}"
+        mysql -f -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS $DATANAME < $SITENAME.$DATABASE.dump
+        log "Imported $SITENAME.$DATABASE.dump to the database $DATANAME" "INFO" "${GREEN}${BOLD}"
+        count=`expr $count + 1`
+        log "Incremented the counter to $count" "INFO" "${BLUE}${BOLD}"
+
+done
+log "Done looping throught the VUE database" "INFO" "${GREEN}${BOLD}"
+#
+# Import classic dataset
+#
+log "Importing the clasic database" "INFO" "${YELLOW}${BOLD}"
+if [ -f $MAPDATA/kwsql ];then
+
+        log "Getting the database name from the kwsql file in the DATA folder" "INFO" "${YELLOW}${BOLD}"
+        CLASSIC=`grep "DATA=" $MAPDATA/kwsql|cut -d"=" -f2`
+        log "The database name is $CLASSIC" "INFO" "${GREEN}${BOLD}"
+        log "Droping the $CLASSIC database if it exists" "INFO" "${YELLOW}${BOLD}"
+        mysql -f -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS -e "DROP DATABASE IF EXISTS $CLASSIC;"
+        log "Dropped the $CLASSIC database" "INFO" "${GREEN}${BOLD}"
+        log "Creating the $CLASSIC database" "INFO" "${YELLOW}${BOLD}"
+        mysql -f -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS -e "CREATE DATABASE $CLASSIC;"
+        log "Importing $CLASSIC into the database $DATANAME" "INFO" "${YELLOW}${BOLD}"
+        mysql -f -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS $CLASSIC < $SITENAME.classic.dump
+        log "Imported $CLASSIC to the database $DATANAME" "INFO" "${GREEN}${BOLD}"
+
+else
+        if [ -f $MAPDATA/PARAM.DA ];then
+                log "Untaring ISAM data from $MAPDATA classic dataset" "INFO" "${GREEN}${BOLD}"
+                tar xf $HOME/$SITENAME.classic.dump
+                log "Check to see if the master dump exists" "INFO" "${GREEN}${BOLD}"
+                if [ -f $HOME/$SITENAME.master.dump ];then
+                        DATANAME="${SITENAME}_master"
+                        log "Dropping the $DATANAME database if it exists" "INFO" "${YELLOW}${BOLD}"
+                        mysql -f -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS -e "DROP DATABASE IF EXISTS $DATANAME;"
+                        log "Dropped the $DATANAME database" "INFO" "${GREEN}${BOLD}"
+                        log "Created the $DATANAME database" "INFO" "${GREEN}${BOLD}"
+                        mysql -f -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS -e "CREATE DATABASE $DATANAME;"
+                        log "Importing $DATANAME into the database" "INFO" "${YELLOW}${BOLD}"
+                        mysql -f -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS $DATANAME < $HOME/$SITENAME.master.dump
+                        log "Imported $DATANAME to the database" "INFO" "${GREEN}${BOLD}"
+                fi
+        else
+                log "No kwsql or PARAM.DA file so skipping classic import" "ERROR" "${RED}${BOLD}"
+                sleep 2
+        fi
+fi
+#
+# Update Classic Parameters
+#
+cd $MAPDATA
+log "Changed to the $MAPDATA folder" "INFO" "${GREEN}${BOLD}"
+log "Fixing SYS parameters in classic dataset" "INFO" "${GREEN}${BOLD}"
+TRIM=`cat $CONF/recentparametervalues.properties|grep OFFSET|cut -d"=" -f2`
+if [ "$TRIM" = "0" ];then
+        log "You have to reinstall the MES for this site to OFFSET if its a test server" "ERROR" "${RED}${BOLD}"
+        sleep 2
+fi
+log "The OFFSET is $TRIM for this dataset" "INFO" "${GREEN}${BOLD}"
+TRIM=`expr $TRIM + 30125`
+TRIMMMS=`expr $TRIM + 33333`
+log "Changed the OFFSET from 30125 to $TRIM" "INFO" "${GREEN}${BOLD}"
+log "Setting the SYS:DC to ${TRIM} and SYS:JT to localhost" "INFO" "${GREEN}${BOLD}"
+if [ "$PCS" = "1" -a "$CSC" = "1" ];then
+        #
+        # Extra enters needed for xlmain with PCS and CSC
+        #
+        echo -e "\n\n\nsecr8\nSYS\nDC\nC\n${SITENAME}_csc\nkiwisql\n800486kiwi\nlocalhost\nY\nN\nC\n${SITENAME}_man\nkiwisql\n800486kiwi\nlocalhost\nY\nN\nC\n${SITENAME}_pcs\nkiwisql\n800486kiwi\nlocalhost\nY\n\n\n\n\n\n\n" > INPUT.TXT
+        #xlmain -p98 -i INPUT.TXT
+        #echo -e "secr8\nSYS\nJT\nC\nlocalhost\n${TRIM}\n9\nmessaging.log\nY\n0\n1\kiwistop\n" > INPUT.TXT
+        #xlmain -p98 -i INPUT.TXT
+fi
+if [ "$CSC" = "1" -a "$PCS" = "0" ];then
+        #
+        # CSC DB but no PCS DB
+        #
+        echo -e "\n\nsecr8\nSYS\nDC\nC\n${SITENAME}_csc\nkiwisql\n800486kiwi\nlocalhost\nY\nN\nC\n${SITENAME}_man\nkiwisql\n800486kiwi\nsim19\nY\n\n\n\n\n\n\n" > INPUT.TXT
+        #xlmain -p98 -i INPUT.TXT
+        #echo -e "secr8\nSYS\nJT\nC\nlocalhost\n$TRIM\n9\nmessaging.log\nY\n0\n1\kiwistop\n" > INPUT.TXT
+        #xlmain -p98 -i INPUT.TXT
+fi
+if [ "$PIC" = "1" ];then
+        log "Updating the PIC database VUE port to $TRIM and MMS port to $TRIMMMS" "INFO" "${GREEN}${BOLD}"
+        mysql -f -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS -e "update ${SITENAME}_pic.plant set vuePort=$TRIM, mmsPort=$TRIMMMS where id=1;"
+fi
+if [ "$PICS" = "1" ];then
+        log "Updating the PICS database VUE port to $TRIM and MMS port to $TRIMMMS" "INFO" "${GREEN}${BOLD}"
+        mysql -f -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS -e "update ${SITENAME}_pics.plant set vuePort=$TRIM, mmsPort=$TRIMMMS where id=1;"
+fi
+        #echo "Fixing GEN parameters in classic dataset"
+        #echo -e "secr8\nGEN\nEE\n3\n./\n1\nN\n3\n./\n1\nN\n3\n./\n1\nN\n3\n./\n1\nN\n3\n./\n1\nN\n3\n./\n1\nN\n3\n./\n1\nN\n3\n./\n1\nN\n3\n./\n1\nN\n3\n./\n1\nN\n3\n./\n1\nN\n3\n./\n1\n\n\n\n\n\n\n\n\n" > INPUT.TXT
+        #xlmain -p98 -i INPUT.TXT
+}
+#
+# Main loop
+while true; do
+  banner
+  menu
+  log "You entered $CODE for the code" "INFO" "${BLUE}${BOLD}"
+  sleep 2
+
+  case $CODE in
+    q|Q)
+      log "Exiting...${NC}" "INFO" "${GREEN}${BOLD}"
+      sleep 1
+      exit 0
+      ;;
+    *)
+      log "Checking Variables" "INFO" "${BLUE}${BOLD}"
+      sleep 1
+      checkVariables
+      log "Checking Code" "INFO" "${BLUE}${BOLD}"
+      sleep 1
+      processFile
+      ;;
+  esac
+done
+#

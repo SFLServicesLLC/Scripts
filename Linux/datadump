@@ -1,0 +1,285 @@
+#!/bin/bash
+#Type:Utility
+##############################################################################
+#
+# Added by steve.ling@sflservicesllc.com 20230727
+# Modified steve.ling@sflservicesllc.com 20230804 
+#
+# This is to ask the user for which printer they wish to use
+#
+##############################################################################
+if [ `uname` = "Linux" ] ; then
+ #stty erase
+ necho="echo -e"
+ BOLD="\033[1m"
+ UNDER="\033[4m"
+ UNDERSTOP="\033[0m"
+ BLINK="\033[5m"
+ REVVIDEO=`tput smso`
+ NORMTYP="\033[0m"
+else
+ necho="echo"
+ BOLD=`tput bold`
+ UNDER=`tput smul`
+ UNDERSTOP=`tput rmul`
+ BLINK=`tput blink`
+ REVVIDEO=`tput smso`
+ NORMTYP=`tput rmso`
+fi
+##############################################################
+#                   Set Menu Header start point
+#                   To include variables for menu header
+##############################################################
+# Display Date
+#
+clear
+DATE=`date +"%d/%a %H:%M"`
+##############################################################
+#                Display layout of Menu Header
+##############################################################
+#
+$necho "Backup                          ${BOLD}Backup Menu      ${NORMTYP}                   $DATE"
+$necho "================================================================================"
+$necho ""
+
+#
+# This script captures datasets and logs and then sends them to a server for pickup
+# Please update these variables for each site
+#
+# For FTP make sure .netrc is setup so that FTP works without prompts
+# If the site has no FTP ability then leave this FTPSERVER blank
+#
+DBHOST=localhost
+SITENAME=$PLANTID
+MYSQLUSER=kiwisql
+MYSQLPASS=800486kiwi
+#FTPSERVER=
+#
+# If LOGS is not set we will use either $VLOG or $JCSC/logs or $JLOG.
+# If the site has no VUE products then leave the SITE and CONF variable blank
+# If MAPDATA is not set it will use $DATA.  For pure VUE sites set MAPDATA to NONE
+#
+SITE=/KIWI/services/sites/${SITENAME}
+#MAPDATA=/KIWI/site_${SITENAME}/data_${SITENAME}
+MAPDATA=/KIWI/site_${SITENAME}/data_${SITENAME}
+LOGS=${SITE}/current/logs
+CONF=${SITE}/current/conf
+COMMDIR=${COMMSDIR}
+XMITDIR=/KIWI/site_${SITENAME}/work/corrop/
+#
+echo ""
+echo "Choose what to do with the backup"
+echo ""
+echo "1) Rsync/Send to a internal Dev or Test Server"
+echo "2) Just a backup"
+echo "X) Exit"
+echo ""
+echo "You have to choose a number, you have 5 seconds"
+read FTPSERVER
+case $FTPSERVER in
+        1)
+        echo "Enter the hostname or IP of the server"
+        read HOSTSERVER
+        FTPSERVER=$HOSTSERVER
+        ;;
+        2)
+        FTPSERVER=BACKUP
+        ;;
+        *) 
+        exit
+        ;;
+esac
+#
+#
+# Determine SITE and MAPDATA variables
+#
+if [ ! -d "$SITE" ]; then
+    echo "Kiwiplan Vue Site not a valid directory: $SITE.  No Vue data will be saved." 
+    SITE=""
+fi
+    
+if [ "$CONF" = "" -a "$VUE" != "None" ];then
+        cd $SITE
+        cd ../conf
+        CONF=`pwd`
+fi
+if [ "$CONF" = "" -a "$VUE" != "None" ];then
+        echo "CONF not defined or found, script can not be run"
+        exit
+fi
+if [ "$MAPDATA" = "" ];then
+        MAPDATA=$DATA
+fi
+if [ "$MAPDATA" = "" ];then
+        echo "Do not know where classic MAP dataset lives.  Assuming it is a pure VUE site"
+        MAPDATA="NONE"
+fi
+#
+# The following variables can be passed in to the script
+# $1 = NAME of dataset
+# $2 or $3 or $4 or $5 = NOQMS or NOLOGS or NOXMIT or NOCOMMS
+#
+FIRSTCHAR=`echo "$1"|cut -c1-2`
+if [ "$FIRSTCHAR" = "NO" ];then
+        VARI1=""
+        VARI2=$1
+        VARI3=$2
+        VARI4=$3
+        VARI5=$4
+else
+        VARI1=$1
+        VARI2=$2
+        VARI3=$3
+        VARI4=$4
+        VARI5=$5
+fi
+#
+# Determine dumpfile name
+#
+cd $HOME
+if [ "$VARI1" = "" ];then
+        DUMPNAME=`date +%m%d%H%M`
+else
+        DUMPNAME=$VARI1
+fi
+#
+# Determine which databases to dump from recentparameters file
+#
+echo "Placing datasets in $HOME directory"
+if [ "$VARI2" = "NOQMS" -o "$VARI3" = "NOQMS" -o "$VARI4" = "NOQMS" -o "$VARI5" = "NOQMS" ];then
+        NOQMS=1
+else
+        NOQMS=0
+fi
+count=1
+if [ "$VUE" != "None" ];then
+        LINES=`cat $CONF/recentparametervalues.properties|grep DBNAME |grep -v "kids"|wc -l|tr -d " "`
+        while [ $count -le $LINES ];do
+                DATANAME=`grep DBNAME $CONF/recentparametervalues.properties |grep -v "kids"|cut -d"=" -f2|head -$count|tail -1`
+                DATABASE=`grep DBNAME $CONF/recentparametervalues.properties |grep -v "kids"|cut -d"=" -f2|head -$count|tail -1|cut -d"_" -f2`
+                if [ "$NOQMS" = "1" ];then
+                        echo $DATANAME|grep qms > /dev/null
+                        if [ $? -eq 0 ];then
+                                echo "Not creating QMS database at user request"
+                        else
+                                echo "Creating $SITENAME.$DATABASE.dump"
+                                mysqldump --single-transaction --tz-utc=false -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS $DATANAME > $SITENAME.$DATABASE.dump
+                        fi
+                else
+                        echo "Creating $SITENAME.$DATABASE.dump"
+                        mysqldump --single-transaction --tz-utc=false -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS $DATANAME > $SITENAME.$DATABASE.dump
+                fi
+                count=`expr $count + 1`
+        done
+        #
+        # Capture preference bundles
+        #
+        cd $CONF/preferencebundles/kiwiplan
+        tar cf $HOME/$SITENAME.preferencebundles.dump *
+        cd $HOME
+        #
+        # Capture licence files
+        #
+        cd $CONF/licence
+        tar cf $HOME/$SITENAME.licence.dump *
+        #
+        # Capture Conf database file
+        #
+        cd $CONF
+        tar cf $HOME/$SITENAME.parameters.dump recentparametervalues.properties
+fi
+#
+# Capture classic dataset unless Pure VUE
+#
+cd $HOME
+if [ "$MAPDATA" != "NONE" ];then
+        if [ -f $MAPDATA/kwsql ];then
+                CLASSIC=`grep "DATA=" $MAPDATA/kwsql|cut -d"=" -f2`
+                echo "Dumping MySQL data from $CLASSIC classic dataset"
+                mysqldump --single-transaction --tz-utc=false -h$DBHOST -u$MYSQLUSER -p$MYSQLPASS $CLASSIC > $SITENAME.classic.dump
+        else
+                cd $MAPDATA
+                echo "Taring ISAM data from $MAPDATA classic dataset"
+                tar cf $HOME/$SITENAME.classic.dump *.PH INDEX* PARAM* upgrade*
+                cd $HOME
+        fi
+else
+        echo "No MAPDATA defined...ignoring classic dataset capture"
+fi
+#
+# Capture log files
+#
+if [ "$VARI2" = "NOLOGS" -o "$VARI3" = "NOLOGS" -o "$VARI4" = "NOLOGS" -o "$VARI5" = "NOXMIT" ];then
+        NOLOGS=1
+else
+        NOLOGS=0
+fi
+if [ "$VARI2" = "NOXMIT" -o "$VARI3" = "NOXMIT" -o "$VARI4" = "NOXMIT" -o "$VARI5" = "NOXMIT" ];then
+        NOXMIT=1
+else
+        NOXMIT=0
+fi
+if [ "$VARI2" = "NOCOMMS" -o "$VARI3" = "NOCOMMS" -o "$VARI4" = "NOCOMMS" -o "$VARI5" = "NOCOMMS" ];then
+        NOCOMMS=1
+else
+        NOCOMMS=0
+fi
+if [ "$VARI2" = "NOLG" -o "$VARI3" = "NOLG" -o "$VARI4" = "NOLG" -o "$VARI5" = "NOLG" ];then
+        NOLG=1
+else
+        NOLG=0
+fi
+if [ "$NOLOGS" = 0 ];then
+        if [ "$VUE" != "None" ];then
+                echo "Capturing VUE log files from $LOGS"
+                tar cfz $SITENAME.logs.dump $LOGS/*.txt* 2>/dev/null
+        else
+                echo "Not capturing VUE log files from $SITE"
+        fi
+        if [ "$NOXMIT" = 0 -a "$XMITDIR" != "" -a -d "$XMITDIR" ];then
+                echo "Capturing XMIT log files from $XMITDIR"
+                tar cfz $SITENAME.xmgen.dump $XMITDIR/XM*.LOG 2>/dev/null
+        else
+                echo "Not capturing XMIT log files from $XMITDIR"
+        fi
+        if [ "$NOCOMMS" = 0 -a "$COMMDIR" != "" ];then
+                echo "Capturing COMMS log files from $COMMDIR"
+                tar cfz $SITENAME.comms.dump $COMMDIR/CO*.LOG 2>/dev/null
+        else
+                echo "Not capturing COMMS log files from $COMMDIR"
+        fi
+        if [ "$NOLG" = 0 -a "$MAPDATA" != "" ];then
+                echo "Capturing Classic LG log files from $MAPDATA"
+                tar cfz $SITENAME.lg.dump $MAPDATA/*.LG $MAPDATA/*.LG1 2>/dev/null
+        else
+                echo "Not capturing Classic LG log files from $MAPDATA"
+        fi
+fi
+#
+# Compress data
+#
+cd $HOME
+echo "Compressing dump files"
+gzip -f $SITENAME.*.dump
+#
+# Create master dumpfile
+#
+echo "Creating single dump file $SITENAME.$DUMPNAME.dump.tar"
+tar cf $SITENAME.$DUMPNAME.dump.tar $SITENAME.*.dump.gz
+#
+# FTP dataset
+#
+if [ "$FTPSERVER" != "BACKUP" ];then
+    echo "Rsync'ing $SITENAME.$DUMPNAME.dump.tar to $FTPSERVER"
+    rsync -chavzP --stats -e ssh $HOME/$SITENAME.$DUMPNAME.dump.tar $FTPSERVER:$HOME/
+fi
+#
+# Remove old dumpfiles
+#
+cd $HOME
+echo "Removing $SITENAME.dump.gz files"
+find $SITENAME.*.dump.gz -type f -delete
+echo "Removing old $SITENAME.dump.tar files"
+find $SITENAME.*.dump.tar -mtime +5 -type f -delete
+#End Script
+######################################################
