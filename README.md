@@ -2,14 +2,16 @@
 ![SFLServicesLLC](favicon.ico)
 
 These are various scripts for the Kiwiplan (Advantive.com) environment.
+Use ![SFLServicesLLC](https://www.sflservicesllc.com) for more documentiation on the Kiwiplan modules.
 
 # Required
 
 - Kiwiplan (Advantive.com) Products
-    - Linux
-    - MsSQL
-    - Windows PowerShell
-    - CMD
+  - CMD
+  - Linux
+  - MsSQL
+  - MySQL
+  - PowerShell
 
 
 ---------------------------------------
@@ -52,11 +54,11 @@ Have a bug or a feature request? Please first search for existing and closed iss
 ### Documentation
 
 - [Kiwiplan](Kiwiplan) This folder contains helpful scripts for the Kiwiplan environment.
+  - [CMD](CMD) This folder contains helpful scripts the Windows environment.
   - [Linux](Linux) This folder contains scripts for MySQL and the Linux environment.
   - [MsSQL](MsSQL) This folder contains scripts for the MsSQL databases.
   - [MySQL](MySQL) This folder contains scripts for the MySQL databases.
   - [PowerShell](PowerShell) This folder contains helpful scripts the Windows PowerShell environment.
-  - [CMD](CMD) This folder contains helpful scripts the Windows environment.
 
 ### License
 
