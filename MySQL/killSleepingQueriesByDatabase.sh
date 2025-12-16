@@ -1,8 +1,6 @@
 #!/bin/bash
 
 #===============================================================================
-# SCRIPT HEADER TEMPLATE
-#============================
 # Script Name: killSleepingQueriesByDatabase.sh
 # Description: This is to kill all sleeping queries by database name
 # 

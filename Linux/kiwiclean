@@ -189,6 +189,7 @@ purge_nonVUE() {
     purge_files "*.BU" $PURGEDAYS "BU backup files" true true
     purge_files "*.BACKUP" $PURGEDAYS "BACKUP files" true true
     purge_files "*.NEW" $PURGEDAYS "NEW temp files" true true
+    purge_files "*.Trace*" $PURGEDAYS "NEW temp files" true true
 }
 
 # Purging VUE files

@@ -1,8 +1,6 @@
 #!/bin/bash
 
 #===============================================================================
-# SCRIPT HEADER TEMPLATE
-#============================
 # Script Name: searchColumnNameDatabase.sh
 # Description: MySQL string search script for database and its column names
 # 

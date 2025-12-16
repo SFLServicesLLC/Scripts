@@ -1,8 +1,6 @@
 #!/bin/bash
 
 #===============================================================================
-# SCRIPT HEADER TEMPLATE
-#============================
 # Script Name: deleteAllDatabases.sh
 # Description: This is to delete a set of MySQL databases with a prefix
 # 
