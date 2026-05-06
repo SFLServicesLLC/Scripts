@@ -59,7 +59,6 @@ Have a bug or a feature request? Please first search for existing and closed iss
 - [Folders](Folders) The following is the folder statucture.
   - [CMD](CMD) This folder contains helpful scripts the Windows environment.
   - [Kiwiplan](Kiwiplan) This folder contains helpful scripts for the Kiwiplan environment.
-  - [Bash](Bash) This folder contains scripts for the Linux Bash shell environment.
   - [MsSQL](MsSQL) This folder contains scripts for the MsSQL databases.
   - [MySQL](MySQL) This folder contains scripts for the MySQL databases.
   - [PowerShell](PowerShell) This folder contains helpful scripts the Windows PowerShell environment.
