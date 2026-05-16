@@ -293,7 +293,7 @@ update_scripts(){
   log "Downloading from GitHub"
   cd $HOME 
   UPDFILE=bash_profile
-  wget https://github.com/SFLServicesLLC/Kiwiplan/blob/main/$UPDFILE
+  wget https://github.com/SFLServicesLLC/Scripts/blob/main/Kiwiplan/LinuxServer/KIWI/corp/bin/$UPDFILE
   if [ $? -ne 0 ]; then
     log "Failed to download new script." "ERROR" "${RED}""${BOLD}"
     sleep 5
