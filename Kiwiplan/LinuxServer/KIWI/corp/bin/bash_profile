@@ -1,0 +1,782 @@
+#!/bin/bash
+#Type:Utility
+#########################################################
+# Script:
+#
+# This is used for logging into a test server
+# 
+# Created by:
+# Steve Ling
+#########################################################
+# Revision
+#
+# 2025-01-26 SFL Initial revision
+# 2025-07-26 SFL Added more logic for display
+# 2025-08-17 SFL Added more logic around adding and deleting sites
+# 2026-05-16 SFL Added auto import logic for the datadump.sh files
+#
+#########################################################
+#
+# Environment:
+#
+umask 002
+#trap 'log "\n You hit Ctrl-C exiting" "INFO" "${BLUE}${BOLD}"; exit 0' SIGINT
+export KIWIBASE=/KIWI
+export MYSQL_USER=${MYSQL_USER:-kiwisql}
+export MYSQL_PWD=${MYSQL_PWD:-800486kiwi}
+DBHOST=localhost
+VERSION=2.0
+#
+# Set the environment variables
+variables() {
+  VUEBASE=$KIWIBASE/services
+  VUESITES=$VUEBASE/sites
+  REV=$KIWIBASE/rev
+  REVS=$REV/map
+  MREVS=$REV/mes
+  KIWIBASE=/KIWI
+  DATASETS=$KIWIBASE/backups
+  DATASETSREM=$KIWIBASE/home/remuser/
+  DATASETSCD=$HOME
+}
+#
+# Define colors
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[1;36m'
+CYAN='\033[1;36m'
+NC='\033[0m' # No Color
+BOLD='\033[1m'
+FLASH='\033[5m'
+#
+# Define log file
+# Logging configuration
+LOG_FILE="/KIWI/corp/bin/bash_profile.log"
+MAX_LOG_SIZE=$((2*1024*1024)) # 2MB
+LOG_DIR=$(dirname "$LOG_FILE")
+#
+# Ensure log directory exists
+mkdir -p "$LOG_DIR"
+#
+# Logging function
+log() {
+  local message="$1"
+  local level="$2" # Optional: INFO, WARNING, ERROR
+  local color="$3"
+
+  # Timestamp
+  timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+
+  # Log message with level and timestamp
+  echo -e "${color}${message}${NC}" | tee -a "$LOG_FILE"
+  #echo -e "${color}${message}${NC}" >> "$LOG_FILE"
+  echo "[${timestamp}] [${level}] ${message}" | logger
+}
+#
+rotate_log() {
+  log "Starting to log rotate" "INFO" "${GREEN}${BOLD}"
+  # 1. Quick exit if file doesn't exist
+  [[ -f "$LOG_FILE" ]] || return 0
+
+  # 2. Get file size portably using 'wc -c'
+  local log_size
+  log_size=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d '[:space:]')
+
+  # Fallback to stat if wc fails for some reason
+  if [[ -z "$log_size" ]]; then
+      log_size=$(stat -c %s "$LOG_FILE" 2>/dev/null || stat -f %z "$LOG_FILE" 2>/dev/null)
+  fi
+
+  # 3. Check if size exceeds maximum (and ensure log_size is a valid number)
+  if [[ "$log_size" =~ ^[0-9]+$ ]] && (( log_size >= MAX_LOG_SIZE )); then
+      local arch_new_log="${LOG_FILE}.$(date '+%Y%m%d%H%M%S').log"
+      
+      log "Log file size ($log_size bytes) exceeds limit ($MAX_LOG_SIZE bytes). Rotating..." "INFO" "${GREEN}${BOLD}"
+      
+      # 4. Atomic move and recreation
+      if mv "$LOG_FILE" "$arch_new_log"; then
+          touch "$LOG_FILE"
+          log "Archived log to: $arch_new_log" "INFO" "${GREEN}${BOLD}"
+      else
+          log "Failed to rotate log file!" "ERROR" "${RED}${BOLD}"
+          return 1
+      fi
+  fi
+  log "Finished to log rotate" "INFO" "${GREEN}${BOLD}"
+}
+#
+# Verify some of the environment variables
+checkVariables() {
+  if [ ! -d "$REVS" ];then
+          log "$REVS does not exist" "ERROR" "${RED}${BOLD}${FLASH}"
+          sleep 5
+          return 1
+  fi
+  #
+  if [ ! -d "$MREVS" ];then
+          log "$MREVS does not exist" "ERROR" "${RED}${BOLD}${FLASH}"
+          sleep 5
+          return 1
+  fi
+  #
+  if [ ! -d "$DATASETS" ];then
+          log "$DATASETS does not exist" "ERROR" "${RED}${BOLD}${FLASH}"
+          sleep 5
+          return 1
+  fi
+}
+#
+# Display banner
+banner(){
+  #
+  # ==================== TABLE ====================
+  log "List of Internal Servers" "INFO" "${BLUE}${BOLD}""${FLASH}"
+  log "${BLUE}╔══════════════════════╤═══════════════════════╤══════════════╗" "INFO" "${NC}"
+  log "${BLUE}║${NC} ${BOLD}Hostname / Type${NC}      ${BLUE}│${NC} ${BOLD}IP Address${NC}            ${BLUE}│${NC} ${BOLD}Status${NC}       ${BLUE}║" "INFO" "${NC}"
+  log "${BLUE}╠══════════════════════╪═══════════════════════╪══════════════╣" "INFO" "${NC}"
+
+  # Function to print a row with status
+  print_host() {
+      local name="$1"
+      local ip="$2"
+      local type="$3"   # optional extra info like Win22
+
+      # Ping test (1 attempt, 1 second timeout)
+      if ping -c1 -W1 "$ip" &>/dev/null; then
+          STATUS="${GREEN}Online${NC}"
+      else
+          STATUS="${RED}Offline${NC}"
+      fi
+
+      log "${BLUE}║${NC} ${GREEN}${name}${NC} ${YELLOW}${type}${NC}    ${BLUE}│${NC} ${YELLOW}${ip}${NC}        ${BLUE}│${NC} ${STATUS}       ${BLUE}║" "INFO" "${NC}"
+  }
+  # ==================== HOSTS ====================
+  log "${BLUE}║${NC} ${YELLOW}KDG${NC}                  ${BLUE}│${NC}                       ${BLUE}│${NC}              ${BLUE}║" "INFO" "${NC}"
+  print_host "sfl-kdg-001" "192.168.101.16" "Win22"
+  log "${BLUE}║${NC} ${YELLOW}ESP SQL${NC}              ${BLUE}│${NC}                       ${BLUE}│${NC}              ${BLUE}║" "INFO" "${NC}"
+  print_host "sfl-sql-001" "192.168.101.15" "Win22"
+  log "${BLUE}║${NC} ${YELLOW}ESP/FFF/VUE${NC}          ${BLUE}│${NC}                       ${BLUE}│${NC}              ${BLUE}║" "INFO" "${NC}"
+  print_host "sfl-rds-002" "192.168.101.14" "Win22"
+  print_host "sfl-rds-003" "192.168.101.11" "Win22"
+  print_host "sfl-rds-004" "192.168.101.12" "Win22"
+  print_host "sfl-rds-005" "192.168.101.13" "Win22"
+  print_host "sfl-rds-006" "192.168.101.18" "Win22"
+  log "${BLUE}║${NC} ${YELLOW}VUE Only${NC}             ${BLUE}│${NC}                       ${BLUE}│${NC}              ${BLUE}║" "INFO" "${NC}"
+  print_host "sfl-vue-001" "192.168.101.18" "Win25"
+  log "${BLUE}╚══════════════════════╧═══════════════════════╧══════════════╝" "INFO" "${NC}"
+  #
+  log "" "INFO" "${GREEN}${BOLD}"
+  log "Version $VERSION" "INFO" "${BLUE}${BOLD}"
+  log "╔═════════════════════════════════════════╗" "INFO" "${GREEN}${BOLD}"
+  log "║  Welcome to the Test/Dev Environment    ║" "INFO" "${GREEN}${BOLD}"
+  log "║                                         ║" "INFO" "${GREEN}${BOLD}"
+  log "║ You are in the server:                  ║" "INFO" "${GREEN}${BOLD}"
+  log "║  $(hostname) ║" "INFO" "${YELLOW}${BOLD}"
+  log "╚═════════════════════════════════════════╝" "INFO" "${GREEN}${BOLD}"
+  log "" "INFO" "${GREEN}${BOLD}"
+  log "Classic Revisions are located ${YELLOW}${BOLD}$REVS" "INFO" "${BLUE}${BOLD}"
+  log "MES Revisions are located ${YELLOW}${BOLD}$MREVS" "INFO" "${BLUE}${BOLD}"
+  log "Backups are located ${YELLOW}${BOLD}$DATASETS" "INFO" "${BLUE}${BOLD}"
+  log "and here ${YELLOW}${BOLD}$DATASETSREM" "INFO" "${BLUE}${BOLD}"
+  log "and ${YELLOW}${BOLD}$DATASETSCD ${BLUE}${BOLD}your home folder" "INFO" "${BLUE}${BOLD}"
+  log "Map Tiles are located here:" "INFO" "${GREEN}${BOLD}"
+  log "/KIWI/services/maps/maptiles" "INFO" "${YELLOW}${BOLD}"
+  log "" "INFO" "${GREEN}${BOLD}"
+}
+#
+# Main Menu
+main_menu(){
+  banner
+  sites_running
+  log "" "INFO" "${NC}" 
+  log "A) Add Site" "INFO" "${GREEN}${BOLD}"
+  log "D) Delete Site." "INFO" "${GREEN}${BOLD}"
+  log "R) Restore Data" "INFO" "${GREEN}${BOLD}"
+  log "S) Select Site" "INFO" "${GREEN}${BOLD}"
+  log "" "INFO" "${NC}" 
+  log "U) Update /KIWI/corp/bin/bash_profile script from GitHub" "INFO" "${RED}${BOLD}"
+  log "Z) Drop to shell NO enviroment" "INFO" "${YELLOW}${BOLD}"
+  log "" "INFO" "${NC}" 
+  log "X) Exit" "INFO" "${RED}""${BOLD}"
+  log "" "INFO" "${NC}" 
+  echo -en "${CYAN}""${BOLD}" "Default [S] : "
+  #read -t 10 choice #Time out of 10 sec
+  read choice
+  case "$choice" in
+    "A"|"a")
+            log "Chose option A" "INFO" "${YELLOW}""${BOLD}"
+            site_add
+    ;;
+    "D"|"d")
+            log "Chose option D" "INFO" "${YELLOW}""${BOLD}"
+            site_delete
+    ;;
+    "R"|"r")
+            log "Chose option R" "INFO" "${YELLOW}""${BOLD}"
+            data_restore
+    ;;
+    "S"|"s")
+            log "Chose option S" "INFO" "${YELLOW}""${BOLD}"
+            site_select
+    ;;
+    "U"|"u")
+            log "Chose option U" "INFO" "${YELLOW}""${BOLD}"
+            update_scripts
+    ;;
+    "X"|"x")
+            log "Exiting..." "INFO" "${YELLOW}""${BOLD}"
+            exit 0
+    ;;
+    "Z"|"z")
+	    log "Dropping to shell..." "INFO" "${YELLOW}""${BOLD}"
+	    #log "Enter name for the site : " "INFO" "${GREEN}""${BOLD}"
+	    #read 
+	    #export EXEC=$SiteName
+	    export EXEC=continue
+	    . /KIWI/corp/bin/stdprofile
+
+    ;;
+    *)
+      site_select
+      return 0
+    ;;
+  esac
+}
+#
+# Running sites
+sites_running(){
+  PS3="Choose site or 0 for main menu: "
+  SITES=$(ls -d $KIWIBASE/site_* | cut -b 12-)
+  log "Sites that are currently running:" "INFO" "${YELLOW}""${BOLD}"
+  for j in $SITES
+    do
+      RUNNING=$(ps -ef | grep tomcat | grep -i "$j" | cut -b 133-136)
+      if [ ! "$RUNNING" = "" ];then
+        log "${GREEN}${BOLD}Site ${BLUE}${BOLD}$j ${GREEN}${BOLD}is already running" "INFO" "${BLUE}""${BOLD}"
+      fi
+    done
+  log "" "INFO" "${GREEN}""${BOLD}"
+  log "Site Ports" "INFO" "${YELLOW}""${BOLD}"
+  for s in $SITES
+  do
+    if [ -e $KIWIBASE/services/sites/"$s"/current/conf/recentparametervalues.properties ];then
+      PORTS=$(cat $KIWIBASE/services/sites/"$s"/current/conf/recentparametervalues.properties|grep OFFSET|cut -d"=" -f2)
+      PORTEXT="$(expr 8080 + "$PORTS") ${GREEN}${BOLD}offset ${BLUE}${BOLD}$PORTS"
+      PORTJT="$(expr 30125 + "$PORTS")"
+      DBTYPE=MySQL
+    else
+      PORTS=""
+      PORTEXT=""
+      if [ -f $KIWIBASE/site_$s/data_$s/XLATEP.PH ]; then
+            DBPH="ISAM"
+      else
+            DBPH="MySQL"
+      fi	
+      DBTYPE=$DBPH
+    fi
+    MAPREV=$(readlink $REV/site_"$s" | sed "s|^${REVS}/||")
+    VUEREV=$(readlink $VUESITES/"$s"/current | sed "s|.*/||")
+    if [ ! -z "$PORTS" ];then
+      log "${GREEN}${BOLD}Site ${BLUE}${BOLD}$s ${GREEN}${BOLD}is a ${BLUE}${BOLD}$DBTYPE ${GREEN}${BOLD}type and has a port of ${BLUE}${BOLD}$PORTEXT / $PORTJT ${GREEN}${BOLD}and MAP Rev of ${BLUE}${BOLD}$MAPREV ${GREEN}${BOLD}and MES Rev of ${BLUE}${BOLD}$VUEREV" "INFO" "${BLUE}""${BOLD}"
+    else
+      log "${GREEN}${BOLD}Site ${BLUE}${BOLD}$s ${GREEN}${BOLD}is a ${BLUE}${BOLD}$DBTYPE ${GREEN}${BOLD}and MAP Rev of ${BLUE}${BOLD}$MAPREV" "INFO" "${BLUE}""${BOLD}"
+    fi
+  done
+}
+#
+# Update Scripts
+update_scripts(){
+  UPDFILE=bash_profile
+  CURRENTVER=$(cat /KIWI/corp/bin/$UPDFILE |grep VERSION= | cut -d'=' -f2)
+  log "Getting the most recent bash_profile script" "INFO" "${YELLOW}""${BOLD}"
+  log "Downloading from GitHub"
+  cd $HOME 
+  UPDFILE=bash_profile
+  wget https://github.com/SFLServicesLLC/Kiwiplan/blob/main/$UPDFILE
+  if [ $? -ne 0 ]; then
+    log "Failed to download new script." "ERROR" "${RED}""${BOLD}"
+    sleep 5
+    main_menu 
+  else
+    UPDVER=$(cat $UPDFILE |grep VERSION= | cut -d'=' -f2)
+  fi
+  if [ "$CURRENTVER" -lt "$UPDVER" ];then
+     log "Updating script..." "INFO" "${GREEN}""${BOLD}"
+     cp -f "$UPDFILE" "$KIWIBASE/corp/bin"
+     if [ $? -ne 0 ]; then
+        log "Failed to update script." "ERROR" "${RED}""${BOLD}"
+        sleep 5
+        rm -f "$UPDFILE"
+        main_menu
+     fi
+     chmod +x "$KIWIBASE/corp/bin/$UPDFILE"
+     rm -f "$UPDFILE"
+     log "Script updated successfully." "INFO" "${BLUE}""${BOLD}"
+  else
+     log "Script does not need to be update" "INFO" "${GREEN}""${BOLD}"
+     rm -f "$UPDFILE"
+  fi
+}
+#
+# File to import
+file_check(){
+  log "------------------------------------------------------------------------------------------" "INFO" "${YELLOW}""${BOLD}"
+  log " Select the directory your tar file  is located:" "INFO" "${BLUE}""${BOLD}"
+  log "------------------------------------------------------------------------------------------" "INFO" "${YELLOW}""${BOLD}"
+  # 1. Prompt the user for the file path
+  read -p "Enter the full path and name of the file: " ARCHIVE
+  # Remove any accidental trailing or leading spaces from user input
+  ARCHIVE=$(echo "$ARCHIVE" | xargs)
+  # 2. Validate: Check if the input is empty
+  if [ -z "$ARCHIVE" ]; then
+      log "Error: No path entered, returning to main menu." "ERROR" "${RED}""${BOLD}"
+      sleep 3
+      main_menu
+  fi
+  # 3. Validate: Check if the file exists
+  if [ ! -f "$ARCHIVE" ]; then
+      log "Error: File '$ARCHIVE' does not exist, returning to main menu" "ERROR" "${RED}""${BOLD}"
+      sleep 3
+      main_menu
+  fi
+  # 4. Validate: Check if it actually has a .tar.gz extension
+  if [[ "$ARCHIVE" != *.tar.gz ]]; then
+      log "Error: The file must be a tar archive, returning to main menu" "ERROR" "${RED}""${BOLD}"
+      sleep 3
+      main_menu
+  fi
+  # 5. Extract the file name and create the target folder name
+  FULL_FILENAME=$(basename "$ARCHIVE")
+  FOLDER_NAME="${FULL_FILENAME%.tar.gz}"
+  DEST_DIR="$HOME/$FOLDER_NAME"
+  log "File validated successfully." "INFO" "${GREEN}""${BOLD}"
+  log "Creating the extract folder will be: $DEST_DIR" "INFO" "${GREEN}""${BOLD}"
+  # 6. Create destination directory
+  mkdir -p "$DEST_DIR"
+  # 7. Extract the file
+  log "Extracting files, please wait..." "INFO" "${GREEN}""${BOLD}"
+  if tar -xzvf "$ARCHIVE" -C "$DEST_DIR"; then
+      log "Success! Files where extracted to $DEST_DIR" "INFO" "${GREEN}""${BOLD}"
+  else
+      log "Extraction failed." "ERROR" "${RED}""${BOLD}"
+      sleep 3
+      main_menu
+  fi
+  log "Backup the license to the "$MREVS"/LICENSE folder" "INFO" "${GREEN}""${BOLD}"
+  yes | cp -f $DEST_DIR/vue/*.licence $MREVS/LICENSE
+}
+#
+# Add a site
+site_add(){
+  file_check
+  log "Preparing to add a site to the environment" "INFO" "${YELLOW}""${BOLD}"
+  log "Enter name for the site name : " "INFO" "${GREEN}""${BOLD}"
+  read NEW_SITE
+
+  if [ -z "$NEW_SITE" ];then
+    log "You have not entered a site name" "ERROR" "${RED}""${BOLD}"
+    sleep 3
+    main_menu
+  fi
+  
+  if find /KIWI/ -maxdepth 1 -type d -name site_"${NEW_SITE}" | grep -q .; then
+    log "The site you entered $NEW_SITE already exist" "ERROR" "${RED}""${BOLD}"
+    sleep 3
+    main_menu
+  fi
+  
+  REVS=$(find /KIWI/rev/map/* -maxdepth 0 -type d| sort)
+  PS3="Select MAP revision for $NEW_SITE : "
+  select REV in $REVS
+  do
+    if [ ! -d "/KIWI/rev/site_$NEW_SITE" ]; then
+      log "Creating the $REV link to the $KIWIBASE/rev/site_"$NEW_SITE"" "INFO" "${GREEN}""${BOLD}"
+      ln -s "$REV" $KIWIBASE/rev/site_"$NEW_SITE"
+    fi
+    log "Making the directory $KIWIBASE/site_"$NEW_SITE"" "INFO" "${GREEN}""${BOLD}"
+    mkdir -p $KIWIBASE/site_"$NEW_SITE"
+    log "Creating the bin link" "INFO" "${GREEN}""${BOLD}"
+    ln -s $KIWIBASE/rev/site_"$NEW_SITE"/bin $KIWIBASE/site_"$NEW_SITE"/bin
+    log "Creating the progs link" "INFO" "${GREEN}""${BOLD}"
+    ln -s $KIWIBASE/rev/site_"$NEW_SITE"/progs $KIWIBASE/site_"$NEW_SITE"/progs
+    log "Creating the scp link" "INFO" "${GREEN}""${BOLD}"
+    ln -s $KIWIBASE/rev/site_"$NEW_SITE"/scp $KIWIBASE/site_"$NEW_SITE"/scp
+    log "Creating the sql link" "INFO" "${GREEN}""${BOLD}"
+    ln -s $KIWIBASE/rev/site_"$NEW_SITE"/sql $KIWIBASE/site_"$NEW_SITE"/sql
+    break
+  done
+
+  log "Adding the $KIWIBASE/site_"$NEW_SITE"/site/bin folder" "INFO" "${GREEN}""${BOLD}"
+  mkdir -p $KIWIBASE/site_"$NEW_SITE"/site/bin
+  log "Adding the $KIWIBASE/site_"$NEW_SITE"/site/dat folder" "INFO" "${GREEN}""${BOLD}"
+  mkdir -p $KIWIBASE/site_"$NEW_SITE"/site/dat
+
+  gen_kidds
+ 
+  install_mysql
+
+  log "Adding the JAVA envirnoment requirements" "INFO" "${YELLOW}""${BOLD}"
+  if [ ! -d $KIWIBASE/services  ];then
+      mkdir -p $KIWIBASE/services/
+  fi
+  cd $KIWIBASE
+  if [ ! -d $KIWIBASE/java  ];then
+      ln -s $KIWIBASE/services java
+  fi
+  mkdir -p $KIWIBASE/services/sites/"$NEW_SITE"/
+  MREVS=$(find $KIWIBASE/rev/mes/* -maxdepth 0 -type d| sort)
+  PS3="Select MES revision for $NEW_SITE : "
+  select MREV in $MREVS
+  do
+    log "Making the $NEW_SITE sites current link folder" "INFO" "${BLUE}""${BOLD}"
+    cd /$KIWIBASE/services/sites/"$NEW_SITE"/
+    mkdir -p $(basename "$MREV")
+    ln -s $(pwd)/$(basename "$MREV") current 
+    mkdir -p $KIWIBASE/services/sites/"$NEW_SITE"/current/conf
+    mkdir -p $KIWIBASE/services/sites/"$NEW_SITE"/current/conf/kiwiplan/roadgrids
+    ln -s $KIWIBASE/services/maps/roadgrids/osm-gh $KIWIBASE/services/sites/"$NEW_SITE"/current/conf/kiwiplan/roadgrids/osm-gh
+    mkdir -p $KIWIBASE/services/sites/"$NEW_SITE"/current/logs
+    log "Making the $NEW_SITE web current link folder" "INFO" "${BLUE}""${BOLD}"
+    mkdir -p $KIWIBASE/services/web/"$NEW_SITE"
+    cd /$KIWIBASE/services/web/"$NEW_SITE"
+    mkdir -p $(basename "$MREV")
+    ln -s $(pwd)/$(basename "$MREV") current
+    break
+  done
+  log "Added $NEW_SITE to the environment type $ENVTYPE" "INFO" "${BLUE}""${BOLD}"
+  log "Setting the $NEW_SITE environment from $KIWIBASE/corp/bin/stdprofile" "INFO" "${YELLOW}""${BOLD}"
+  export PLANTID=$NEW_SITE
+  export KIWI=$KIWIBASE/site_$PLANTID
+  export EXEC="continue"
+  . /KIWI/corp/bin/stdprofile
+  log "Now will add the MES environment for $NEW_SITE" "INFO" "${BLUE}""${BOLD}"
+  cd $MREV 
+  REVBASE=$(basename "$MREV")
+  log "Removing any license and copying the one from the extracted file" "INFO" "${GREEN}""${BOLD}"
+  rm -rf *.licence
+  log "Copying the livense from the $DEST_DIR folder" "INFO" "${GREEN}""${BOLD}"
+  ls $DEST_DIR/vue/*.licence
+  yes | cp $DEST_DIR/vue/*.licence .
+  log "This will take some time to decompress and will start the install" "INFO" "${BLUE}""${BOLD}""${FLASH}"
+  tar zxvf mes_"$REVBASE".tar*
+  mv -f mes_"$REVBASE"/* .
+  rmdir mes_"$REVBASE"
+  export KIWI=/KIWI
+  ./mes-"$REVBASE".sh
+  log "Running the importdata script for the $NEW_SITE environment and looking for them in $DATASETS" "INFO" "${GREEN}""${BOLD}"
+  export KIWI=/KIWI/site_$NEW_SITE
+  import_site
+  main_menu
+}
+#
+# Import site
+import_site(){
+  cd $DEST_DIR/databases
+  # import the data into the database
+  log "------------------------------------------------------------------------------------------" "INFO" "${YELLOW}""${BOLD}"
+  log "Starting database import process..." "INFO" "${GREEN}""${BOLD}"
+  PREFIX_REPLACE="$NEW_SITE"_
+  # Check if there are any .sql.gz files in the current directory
+  shopt -s nullglob
+  files=( *.sql.gz )
+  if [ ${#files[@]} -eq 0 ]; then
+      log "No .sql.gz files found in the current directory." "ERROR" "${RED}""${BOLD}"
+      log "Nothing will be imported you will need to use the importsqlfiles or importdumpfiles script"  "INFO" "${GREEN}""${BOLD}"
+      sleep 3
+      main_menu
+  fi
+  # Loop through all .sql.gz files
+  for file in "${files[@]}"; do
+      # 1. Extract the base name (everything before .sql.gz)
+      # e.g., 'santa_cwr.sql.gz' -> 'santa_cwr'
+      base_name="${file%.sql.gz}"
+      
+      # 2. Dynamically find the prefix (everything up to and including the first underscore)
+      # e.g., 'santa_cwr' -> 'santa_'
+      prefix_find="${base_name%%_*}-"     # Temporary placeholder step
+      prefix_find="${base_name%%_*}_"     # Correctly isolates 'santa_'
+      
+      # 3. Replace the discovered prefix with your new prefix
+      # e.g., 'santa_cwr' becomes 'santa2_cwr'
+      db_name="${base_name/$prefix_find/$PREFIX_REPLACE}"
+      
+      log "Processing file: $file" "INFO" "${GREEN}""${BOLD}"
+      log "Detected Prefix: $prefix_find" "INFO" "${GREEN}""${BOLD}"
+      log "Target database: $db_name" "INFO" "${GREEN}""${BOLD}"
+      
+      # Create the new database if it doesn't already exist
+      log "Creating database if not exists..." "INFO" "${GREEN}""${BOLD}"
+      mysql -u "$MYSQL_USER" -p"$MYSQL_PWD" -e "CREATE DATABASE IF NOT EXISTS \`$db_name\`;"
+      
+      # Decompress and import on the fly
+      log "Importing data..." "INFO" "${GREEN}""${BOLD}"
+      gunzip -c "$file" | mysql -u "$MYSQL_USER" -p"$MYSQL_PWD" "$db_name"
+      
+      # Check if the import was successful
+      if [ ${PIPESTATUS[1]} -eq 0 ]; then
+          log "Successfully imported into $db_name!" "INFO" "${GREEN}""${BOLD}"
+      else
+          log "Failed to import into $db_name" "ERROR" "${RED}""${BOLD}"
+      fi
+      log "------------------------------------------------------------------------------------------" "INFO" "${YELLOW}""${BOLD}"
+  done
+  $VUESITES/$NEW_SITE/current/bin/upgrade.sh
+}
+#
+# Site Delete
+site_delete(){
+  if ! ls $KIWIBASE/site_* >/dev/null 2>&1; then
+        echo "Sites do not exist"
+        sleep 2
+        main_menu
+  fi
+  PS3="Choose site or 0 for main menu: "
+  SITES=$(ls -d $KIWIBASE/site_* | cut -b 12-)
+  if "$MAPDATA"/kwsql >/dev/null 2>&1; then
+        CLASSIC=$(grep "DATA=" "$MAPDATA"/kwsql|cut -d"=" -f2)
+  else
+        CLASSIC=""
+  fi
+  select SITE in $SITES
+  do
+    if [[ -z "$SITE" ]];then
+      log "Returning to the main menu" "INFO" "${YELLOW}""${BOLD}"
+      banner
+      main_menu
+    fi
+    log "Are you sure you want to delete /KIWI/site_$SITE (Y/N or 1/0)?" "INFO" "${RED}""${BOLD}"
+    read choice
+      case "$choice" in
+      Y|y|1)
+	log "Deleting the MySQL databases" "INFO" "${YELLOW}""${BOLD}"
+	# Get list of databases with the specified prefix
+	databases=$(mysql -u$MYSQL_USER -p$MYSQL_PWD -e "SHOW DATABASES LIKE '${SITE}_%'" | grep -v Database)
+	# Loop through each database and drop it
+	for db in $databases; do
+	    echo "Dropping database: $db"
+	    mysql -u$MYSQL_USER -p$MYSQL_PWD -e "DROP DATABASE \`$db\`"
+	    if [ $? -eq 0 ]; then
+	        echo "Successfully dropped $db"
+	    else
+	        echo "Error dropping $db"
+	    fi
+	done
+        log "Deleting the Kiwi Site Folder" "INFO" "${YELLOW}""${BOLD}"
+        rm -rf $KIWIBASE/site_"$SITE"
+	log "Deleted the Kiwi Site Folder" "INFO" "${RED}""${BOLD}"
+        log "Deleting the Rev Site Folder" "INFO" "${YELLOW}""${BOLD}"
+        rm -f $KIWIBASE/rev/site_"$SITE"
+        log "Deleted the Rev Site Folder" "INFO" "${RED}""${BOLD}"
+        log "Deleting the Jave Site Folder" "INFO" "${YELLOW}""${BOLD}"
+        rm -rf $KIWIBASE/services/sites/"$SITE"/
+        log "Deleted the Jave Site Folder" "INFO" "${RED}""${BOLD}"
+        log "Deleting the Web Folder" "INFO" "${YELLOW}""${BOLD}"
+        rm -rf $KIWIBASE/services/web/"$SITE"
+        log "Deleted the Web Folder" "INFO" "${RED}""${BOLD}"
+      ;;
+      *)
+        main_menu
+      ;;
+      esac
+    log "We deleted the /KIWI/site_$SITE" "INFO" "${YELLOW}""${BOLD}"
+    sleep 3
+    break
+  done
+  main_menu
+}
+
+data_restore() {
+    log "" "INFO" "${GREEN}""${BOLD}"
+  log "Sites that are available or 0 to return to main menu:" "INFO" "${YELLOW}""${BOLD}"
+  select SITE in $SITES
+  do
+    if [[ -z "$SITE" ]];then
+        main_menu
+    fi
+    export PLANTID=$SITE
+    export KIWI=$KIWIBASE/site_$PLANTID
+    export EXEC="continue"
+  done
+  file_check
+  import_site
+  main_menu
+}
+
+install_mysql() {
+  local mysqldbname
+  log "Adding and setting up the kwsql file and the database " "INFO" "${YELLOW}""${BOLD}"
+
+  if [ ! -d $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE" ]; then
+    log "Creating the $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE" directory" "INFO" "${GREEN}""${BOLD}" 
+    mkdir -p $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"
+  fi
+
+  log "Select which directory has your backup to search:" "INFO" "${BLUE}""${BOLD}" 
+  log "--------------------------------" "INFO" "${BLUE}""${BOLD}" 
+  PS3="Choose a folder: "
+  # Create an array of subdirectories in the current folder
+  select dir in */; do
+      if [ -n "$dir" ]; then
+          log  "Searching in: $dir" "INFO" "${GREEN}""${BOLD}"
+          
+          # 2. Run the search inside the selected directory
+          find "$dir" -type f \( -name "*map.*" -o -name "*classic.*" \) -exec basename {} \;
+          find "$dir" -type f \( -name "*map.*" -o -name "*classic.*" \) -exec basename {} \; | grep -o -E "map|classic"
+          mysqldbname=`find "$dir" -type f \( -name "*map.*" -o -name "*classic.*" \) -exec basename {} \; | grep -o -E "map|classic"`
+          
+          break # Exit the menu after running
+      else
+          echo "Invalid selection. Please choose a valid number."
+      fi
+  done
+
+  #mysqldbname=$(find . -type f \( -name "*map.*" -o -name "*classic.*" \) -exec basename {} \; | grep -o -E "map|classic")
+  if [ -z "$mysqldbname" ]; then
+    log "Cannot find the database extention for the MAP dataset" "INFO" "${BLUE}""${BOLD}"
+    log "Hit 1 for "$NEW_SITE"_classic or 2 "$NEW_SITE"_map" "INFO" "${BLUE}""${BOLD}"
+    echo -en "${BLUE}""${BOLD}" "Default [2] : "
+    read dbchoice
+      case "$choice" in
+      1)
+	    mysqldbname=classic
+      ;;
+    *)
+      mysqldbname=map
+    ;;
+      esac
+  fi
+  log "Drop is exists and then creating new database called $NEW_SITE_$mysqldbname " "INFO" "${YELLOW}""${BOLD}"
+  mysql -e "drop database $NEW_SITE_$mysqldbname"
+  mysql -e "create database $NEW_SITE_$mysqldbname"
+  log "Granting permissions to $NEW_SITE_$mysqldbname " "INFO" "${YELLOW}""${BOLD}"
+  mysql -e "grant all on $NEW_SITE_$mysqldbname.* to '$MYSQL_USER'@'localhost' identified by '$MYSQL_PWD'"
+  mysql -e "grant all on $NEW_SITE_$mysqldbname.* to '$MYSQL_USER'@'%' identified by '$MYSQL_PWD'"
+  
+  log "Creating the kwsql file" "INFO" "${YELLOW}""${BOLD}"
+  rm -f $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
+  touch $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
+  echo "DATA=""${NEW_SITE}""_$mysqldbname" > $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
+  echo "HOST=localhost" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
+  echo "INTERFACE=sql" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
+  echo "USER=$MYSQL_USER" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
+  echo "PASSWORD=$MYSQL_PWD" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql 
+  #   echo "PASSWORDX=2o5tP2P8uX4WMp4xsjVnK8DGX5uYrwBz" >> /KIWI/site_$NEW_SITE/data_$NEW_SITE/kwsql   
+  echo "LOG=error" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
+  echo "LOGPID=1" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
+  echo "CHARSET=latin1" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
+
+  log "Finished adding and setting up the kwsql file and the database " "INFO" "${YELLOW}""${BOLD}"
+}
+
+gen_kidds() {
+  log "Adding and setting up the KIDSENV file" "INFO" "${YELLOW}""${BOLD}"
+  rm -f $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  touch $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "SHELL=/bin/sh" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "TERM=vt100" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIDSDEBUG=4" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIDSLOGDIR=/tmp" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIDSLOGLEVEL=4" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIDSLOGMAX=1000000" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#Settings can be either error or query" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KWSQL_LOG=query" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KWLOCK_TIME_LOG=15" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KWLOCK_TIME_COUNT=15" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIWI_NO_CATCH_HUP=1" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIWI_LOCK_NOPID=1" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIWISITE=$NEW_SITE" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIWI=/KIWI/site_$NEW_SITE" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "DATA=\$KIWI/data_$NEW_SITE" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "WORK=\$KIWI/work/$LOGNAME" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "BIN=\$KIWI/bin/" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "PROGS=\$KIWI/progs/" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "SCP=\$KIWI/scp/" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "SITEBIN=\$KIWI/site/bin" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "SITEDAT=\$KIWI/site/dat" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "SQL=\$KIWI/sql" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIDSLOGDIR=\$KIWI/work/$LOGNAME" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KWSQL_COMMONDIR=\$KIWI/data_$NEW_SITE" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "LD_LIBRARY_PATH=\$PROGS" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KWSQL_USER=$MYSQL_USER" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KWSQL_PASS=$MYSQL_PWD" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIWISEA=.:\$DATA:\$SITEDAT:\$SITEBIN:\$PROGS:\$BIN:\$SCP:\$SQL"  >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "PATH=\$PATH:.:\$SITEDAT:\$SITEBIN:\$CORPBIN:\$PROGS:\$BIN:\$DAT" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  log "Finished adding and setting up the KIDSENV file" "INFO" "${YELLOW}""${BOLD}"
+}
+
+#need to fix counter for classic and VUE here
+setup_counter () {
+  cd $KIWIBASE
+  if [ ! -d $KIWIBASE/"$SITE_counter" ];then
+        mkdir -p $KIWIBASE/"$SITE_counter"
+  fi
+  #ln -s $KIWIBASE/site_"$NEW_SITE"/work/mdcxmt "$SITE_counter"
+}
+#
+# Select a site
+site_select(){
+  if [ ! -d $KIWIBASE/site_*  ];then
+    log "Sites do not exists" "ERROR" "${RED}""${BOLD}""${FLASH}"
+    sleep 5
+    main_menu
+  fi
+  log "" "INFO" "${GREEN}""${BOLD}"
+  log "Sites that are available or 0 to return to main menu:" "INFO" "${YELLOW}""${BOLD}"
+  select SITE in $SITES
+  do
+    if [[ -z "$SITE" ]];then
+        main_menu
+    fi
+
+    export PLANTID=$SITE
+    export KIWI=$KIWIBASE/site_$PLANTID
+    export EXEC="kiwimenu menu=support"
+
+    # Check id kwsql file exists
+    if [ -e $KIWIBASE/site_"$SITE"/data_"$SITE"/kwsql ];then
+      export CLASSIC=$(grep "DATA=" $KIWIBASE/site_"$SITE"/data_"$SITE"/kwsql|cut -d"=" -f2)
+      # MySQL query
+      QUERY="SELECT SUBSTRING(xl_body,30,39) FROM XLATEP WHERE xl_system='GEN' AND xl_prefix='EE' OR xl_prefix='EI'"
+      # Execute query and store results
+      results=$(mysql -h "$DBHOST" -u "$MYSQL_USER" -p"$MYSQL_PWD" -D "$CLASSIC" -e "$QUERY" --batch --silent)
+    fi
+
+    # Check if query was successful
+    if [ $? -ne 0 ]; then
+      log "Error executing MySQL query" "ERROR" "${RED}""${BOLD}""${FLASH}"
+      sleep 5
+      main_menu
+    fi
+
+    # Read results line by line
+    while IFS=$'\t' read -r -a columns; do
+      if [ -n "${columns[0]}" ]; then
+        mkdir -p "$(echo "${columns[0]}" | tr -d ' ')" 
+        if [ $? -eq 0 ]; then
+          log "Created the following folder : ${columns[0]}" "INFO" "${BLUE}""${BOLD}"
+        else
+          log "Failed to create folder : ${columns[0]}" "ERROR" "${RED}""${BOLD}"
+        fi
+      else
+        log "Empty folder name in first column" "WARNING" "${YELLOW}""${BOLD}"
+      fi
+    done <<< "$results"
+
+    setup_counter
+    . $KIWIBASE/corp/bin/stdprofile
+    break
+  done
+}
+#
+# Execute
+variables
+checkVariables
+rotate_log
+main_menu
