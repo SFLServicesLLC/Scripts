@@ -152,6 +152,8 @@ banner(){
       log "${BLUE}║${NC} ${GREEN}${name}${NC} ${YELLOW}${type}${NC}    ${BLUE}│${NC} ${YELLOW}${ip}${NC}        ${BLUE}│${NC} ${STATUS}       ${BLUE}║" "INFO" "${NC}"
   }
   # ==================== HOSTS ====================
+  log "${BLUE}║${NC} ${YELLOW}Linux${NC}                ${BLUE}│${NC}                       ${BLUE}│${NC}              ${BLUE}║" "INFO" "${NC}"
+  print_host "sfl-lin-004" "192.168.101.20" "RedHat"
   log "${BLUE}║${NC} ${YELLOW}KDG${NC}                  ${BLUE}│${NC}                       ${BLUE}│${NC}              ${BLUE}║" "INFO" "${NC}"
   print_host "sfl-kdg-001" "192.168.101.16" "Win22"
   log "${BLUE}║${NC} ${YELLOW}ESP SQL${NC}              ${BLUE}│${NC}                       ${BLUE}│${NC}              ${BLUE}║" "INFO" "${NC}"
@@ -293,7 +295,7 @@ update_scripts(){
   log "Downloading from GitHub"
   cd $HOME 
   UPDFILE=bash_profile
-  wget https://github.com/SFLServicesLLC/Scripts/blob/main/Kiwiplan/LinuxServer/KIWI/corp/bin/$UPDFILE
+  wget https://github.com/SFLServicesLLC/Kiwiplan/blob/main/$UPDFILE
   if [ $? -ne 0 ]; then
     log "Failed to download new script." "ERROR" "${RED}""${BOLD}"
     sleep 5
@@ -634,16 +636,19 @@ install_mysql() {
   #mysqldbname=$(find . -type f \( -name "*map.*" -o -name "*classic.*" \) -exec basename {} \; | grep -o -E "map|classic")
   if [ -z "$mysqldbname" ]; then
     log "Cannot find the database extention for the MAP dataset" "INFO" "${BLUE}""${BOLD}"
-    log "Hit 1 for "$NEW_SITE"_classic or 2 "$NEW_SITE"_map" "INFO" "${BLUE}""${BOLD}"
+    log "Hit 1 for "$NEW_SITE"_classic or 2 "$NEW_SITE"_map simply enter a name to use" "INFO" "${BLUE}""${BOLD}"
     echo -en "${BLUE}""${BOLD}" "Default [2] : "
     read dbchoice
       case "$choice" in
       1)
 	    mysqldbname=classic
       ;;
-    *)
+      2)
       mysqldbname=map
-    ;;
+      ;;
+      *)
+      mysqldbname="$choice"
+      ;;
       esac
   fi
   log "Drop is exists and then creating new database called $NEW_SITE_$mysqldbname " "INFO" "${YELLOW}""${BOLD}"
@@ -681,12 +686,27 @@ gen_kidds() {
   echo "KIDSLOGLEVEL=4" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
   echo "KIDSLOGMAX=1000000" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
   echo "#Settings can be either error or query" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
-  echo "KWSQL_LOG=query" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#KWSQL_LOG turns on logging for the SQL environment, It's the equivalent of the LOG line in the kwsql file." >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#info: Only information messages are logged (such as displaying what internal options were set, etc). File: SQLINFO.pid" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#warn: Only warnings are logged. SQLWARN.pid" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#error: Only errors are logged. SQLERROR.pid" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#query: All queries issued to the SQL engine are logged. SQLQUERY.pid" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#all: (Use this with caution). Every byte of information is logged. SQLDATA.pid" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#KWSQL_LOG=query" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#You always get error logs regardless of the log level set." >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#If you have info logging on, you will not see "warn", "query" or "all" in the logs." >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#If you have warn on, you will not see query or data logs but you will see info logs." >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#If you have error on, you will also see warn and info, but not query or data" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#If you have query on, you will also see warn and info, but not data" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "#If you have "all" on, you see the lot." >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
   echo "" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
-  echo "KWLOCK_TIME_LOG=15" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
-  echo "KWLOCK_TIME_COUNT=15" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "MAXPROC=1000 # This allows the maximum number of concurrent KIWIPLAN processes to be set. (Default is 256)." >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KWLOCK_TIME_LOG=15 # For locking diagnostics" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KWLOCK_TIME_COUNT=15 # For locking diagnostics" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
   echo "KIWI_NO_CATCH_HUP=1" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
-  echo "KIWI_LOCK_NOPID=1" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIWI_LOCK_NOPID=1 # reduced overhead in the system writing a Process ID for every file lock" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KIWI_LOCK_DELAY=1000" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
+  echo "KWSQL_NODELAY_ON_EXIT=1 # influence the BOB performance" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
   echo "" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
   echo "KIWISITE=$NEW_SITE" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
   echo "KIWI=/KIWI/site_$NEW_SITE" >> $KIWIBASE/site_"$NEW_SITE"/KIDSENV
