@@ -1,0 +1,117 @@
+#!/bin/bash
+umask 002
+
+if [ -r $KIWI/site/KIWIENV ]; then
+   COMM_DIR=`cat /KIWI/site_$PLANTID/site/KIWIENV | grep "^COMMSDIR:" | cut -d":" -f2`
+   AB_DIR=`cat /KIWI/site_$PLANTID/site/KIWIENV | grep "^HOMEAB:" | cut -d":" -f2`
+fi
+
+export KIDSLOGDIR=/tmp
+export KIDSLOGMAX=1000000
+export KIDSLOGLEVEL=4
+#export KWSQL_LOG=query
+export KWLOCK_TIME_LOG=15
+export KWLOCK_TIME_COUNT=15
+export KIWI_NO_CATCH_HUP=1
+export KIWI_LOCK_NOPID=1
+
+export KIWIBASE=/KIWI
+export KIWI=${KIWI:-/$KIWIBASE/site_$PLANTID}
+export BACKUPS=${BACKUPS:-${KIWIBASE}/backups}
+export BIN=${BIN:-${KIWI}/bin}
+
+# COMMS
+export COMMSDIR=${COMMSDIR:-${KIWI}/work/cscomm}
+export COMM_DIR=${COMM_DIR:-COMMSDIR}
+export COMMS_PRINTER=98
+
+export CORPBIN=${CORPBIN:-${KIWIBASE}/corp/bin}
+export CORPDAT=${CORPDAT:-${KIWIBASE}/corp/dat}
+export DATA=${DATA:-${KIWI}/data_$PLANTID}
+export HOMEAB=${HOMEAB:-${KIWI}/work/mdcxmt}
+export HOMECO=${HOMECO:-${KIWI}/work/corrop}
+export HOMECONV=${HOMECONV:-${KIWI}/work/ducker}
+export PROGS=${PROGS:-${KIWI}/progs}
+export SCP=${SCP:-${KIWI}/scp}
+export SQL=${SQL:-${KIWI}/sql}
+export UFD=${UFD:-${KIWI}/ufd}
+export SITEBIN=${SITEBIN:-${KIWI}/site/bin}
+export SITEDAT=${SITEDAT:-${KIWI}/site/dat}
+export WORK=${WORK:-${KIWI}/work/${LOGNAME}}
+export ftpdir_ord=/mnt/ducker/ordinfo
+export ftpdir_seq=/mnt/ducker/corrseq
+export ftpdir_ols=/mnt/ducker/ol
+export ftpdir_stk=/mnt/ducker/pidnumber
+export ftpdir_load=/mnt/ducker/cvm_enter
+export DCV_VERSION=3.01
+export USESAMBA=1
+
+
+# VUE Directories
+export VUE=${VUE:-${KIWIBASE}/services/sites/$PLANTID/current}
+export JCSC=${VUE:-${KIWIBASE}/services/sites/$PLANTID/current}
+export VBIN=${VBIN:-${KIWIBASE}/services/sites/$PLANTID/current/bin}
+export VLOG=${VLOG:-${KIWIBASE}/services/sites/$PLANTID/current/logs}
+export VCONF=${VCONF:-${KIWIBASE}/services/sites/$PLANTID/current/conf}
+export KBIN=${KBIN:-${KIWIBASE}/services/etl/kdw/current/kiwiplan/bin}
+export KLOG=${KLOG:-${KIWIBASE}/services/etl/kdw/current/kiwiplan/logs}
+export KCONF=${KCONF:-${KIWIBASE}/services/etl/kdw/current/kiwiplan/conf}
+
+# KEYCLOAK
+export KEYCLOAK_ADMIN=admin
+export KEYCLOAK_ADMIN_PASSWORD=admin1
+
+export PS1="\\[$(tput bold)\\]\\[$(tput setaf 1)\\]\\[$(tput setab 8)\\]
+"\\u\\[$(tput setaf 5)\\]@\\[$(tput setaf 1)\\]`hostname`"\\[$(tput setaf 2)\\] : ""`uname`"" : \\[$(tput setaf 6)\\]""\d \t : ""`echo $PLANTID`""
+"[\\w]'\$\[$(tput sgr0)\] '
+export KWSQL_COMMONDIR=${KWSQL_COMMONDIR:-${DATA}}
+#export LANGUAGE=${LANGUAGE:-{KIWI_LANG}}
+export KWSQL_USER=${KWSQL_USER:-kiwisql}
+export MYSQL_PWD=${MYSQL_PWD:-800486kiwi}
+export EXEC=${EXEC:-""}
+
+# Has to come after the $PROGS definition
+export LD_LIBRARY_PATH=${PROGS}
+
+#export HOMELD=${HOMELD:-${KIWI}/work/autotags}
+#export HOMECONVM=${HOMECONVM:-${KIWI}/work/minda}
+#export HOMECONVS=${HOMECONVS:-${KIWI}/work/mindas}
+
+export KIWISEA=".:$WORK:$HOME:$DATA:$SITEDAT:$SITEBIN:$CORPDAT:$CORPBIN:$BIN:$PROGS:$SCP:$SQL"
+export PATH=".:$WORK:$HOME:$SITEBIN:$CORPBIN:$BIN:$PROGS:/bin:/usr/bin:/usr/sbin"
+export JAVA_HOME=/usr/lib/jvm/jre-11
+#export JAVA_HOME=/usr/lib/jvm/jre-1.8.0-openjdk
+
+#if [ -z "${WORK}" ]; then 
+#  echo "Variable WORK does not exist. WORK: ${WORK}"
+#  sleep 2
+#  exit
+#fi
+
+if [ ! -d ${WORK} ]; then
+  mkdir -p ${WORK}
+  echo "8bit" > ${KIWI}/work/${LOGNAME}/PROFILE
+  echo "PRINTER:98" >> ${KIWI}/work/${LOGNAME}/PROFILE
+  if [ ! -d ${WORK} ]; then
+    clear
+    echo -e "ERROR: Cannot create work directory : ${WORK}"
+    echo -e "Press <Enter> to continue ... \c"
+    read key
+    exit 1
+  fi
+else
+  echo "8bit" > ${KIWI}/work/${LOGNAME}/PROFILE
+  echo "PRINTER:98" >> ${KIWI}/work/${LOGNAME}/PROFILE
+fi
+
+cd $WORK
+
+if [ "${EXEC}" = "continue" ];then
+   echo "Only loading the environment"
+else
+   if [ -z "${EXEC}" ]; then
+      exit 1
+   else
+      ${EXEC}
+   fi
+fi

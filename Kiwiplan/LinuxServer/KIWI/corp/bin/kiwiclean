@@ -1,39 +1,37 @@
 #!/bin/bash
 #/*****************************************************************************
-#/*     Script : kiwiclean
-#/*   Function : This script is to clean up transaction files
+#/* Script : kiwiclean
+#/* Function : This script is to clean up transaction files
 #/*
-#/*    Written : 19 Oct 2025
-#/*     Author : Steven F Ling
+#/* Written : 19 Oct 2025
+#/* Author : Steven F Ling
 #/*
 #/*****************************************************************************
 # Revision History :
-VERSION=1.1
-# *(#) Date               BY            Revision Description
-# *(#) ---------    ---------------     --------------------
+VERSION=1.3
+# *(#) Date             BY           Revision Description
+# *(#) ---------   ---------------    --------------------
 # *(#) 2025-10-19   Steve Ling          Created
 # *(#) 2025-10-20   Steve Ling          Improved: Added drive space checks, space savings calculation,
 # *(#)                                  fixed empty purge_VUE_logs, better error handling,
 # *(#)                                  consistent find options, and general robustness.
-# *(#)
+# *(#) 2025-10-21   Steve Ling          Added the excluding of directories the script cannot access
+# *(#)                                  Added a Dry Run option to print only
+# *(#)                                  execute like: this DRY_RUN=true kiwiclean
 #
 #*****************************************************************************
 
 # Exit on any error
 set -euo pipefail
 
-#VARIABLES
-#/* Kiwiplan Base Directory
-KIWIBASE=$(readlink /KIWI 2>/dev/null || echo "")
-export KIWI=${KIWI:-${KIWIBASE}}
-if [[ -z "$KIWI" || ! -d "$KIWI" ]]; then
-    echo "Error: KIWI directory not found or not set. Exiting." >&2
-    exit 1
-fi
-
 #/* script attributes and variable definitions
 export actime=mtime   # Looks at when the content of a file was last altered
-# export actime=ctime # Looks at when any aspect of a file's metadata or content was last altered
+
+# Logging configuration
+LOG_FILE="/tmp/kiwiclean.log"
+MAX_LOG_SIZE=$((2*1024*1024)) # 2MB
+LOG_DIR=$(dirname "$LOG_FILE")
+DRY_RUN=${DRY_RUN:-false} # used to simply look at what will be deleted
 
 # Define color codes
 RED='\033[1;31m'
@@ -44,22 +42,6 @@ CYAN='\033[1;36m'
 NC='\033[0m' # No Color
 BOLD='\033[1m'
 FLASH='\033[5m'
-
-# Logging configuration
-LOG_FILE="/KIWI/corp/bin/kiwiclean.log"
-MAX_LOG_SIZE=$((2*1024*1024)) # 2MB
-LOG_DIR=$(dirname "$LOG_FILE")
-# Ensure log directory exists
-# Ensure log directory exists
-create_folders() {
-if [ ! -d "$LOG_DIR" ];then
-    log_message "INFO" "${YELLOW}Creating log folder $LOG_DIR${NC}"
-    mkdir -p "$LOG_DIR"
-else
-    log_message "INFO" "${GREEN}Log folder $LOG_DIR exists${NC}"
-fi
-}
-mkdir -p "$LOG_DIR"
 
 # Logging function
 log() {
@@ -74,6 +56,32 @@ log() {
   echo -e "${RED}${timestamp}${color} [${level}] ${message}${NC}"
   echo "${timestamp} [${level}] ${message}" >> "$LOG_FILE"
   echo "[${timestamp}] [${level}] ${message}" | logger
+}
+
+#/* Kiwiplan Base Directory
+set_environment(){
+KIWIBASE=$(readlink /KIWI 2>/dev/null || echo "")
+if [[ -z "$KIWIBASE" ]]; then
+    KIWIBASE="Failed to read symbolic link"
+fi
+
+log "Kiwi Base directory is $KIWIBASE" "INFO" "${GREEN}${BOLD}"
+export KIWI=${KIWIBASE}
+
+if [[ -z "$KIWI" || ! -d "$KIWI" ]]; then
+    echo "Error: KIWI directory not found or not set. Exiting." >&2
+    exit 1
+else
+    log "Base directory is $KIWI" "INFO" "${GREEN}${BOLD}"
+fi
+
+# Ensure log directory exists
+if [[ ! -d "$LOG_DIR" ]];then
+    log "Creating the log folder $LOG_DIR" "INFO" "${CYAN}${BOLD}"
+    mkdir -p "$LOG_DIR"
+else
+    log "Log folder $LOG_DIR already exists" "INFO" "${CYAN}${BOLD}"
+fi
 }
 
 # Log Rotate
@@ -107,7 +115,12 @@ banner() {
     log "|  $(hostname)" "INFO" "${YELLOW}${BOLD}"
     log "=========================================" "INFO" "${GREEN}${BOLD}"
     log "Log file located here $LOG_FILE" "INFO" "${YELLOW}${BOLD}"
-    echo ""
+    log " " "INFO" "${GREEN}${BOLD}"
+    log "This will not delete anything in any folder called /rev/" "WARN" "${FLASH}${YELLOW}${BOLD}"
+    log "This will not delete anything in any folder called /logs/" "WARN" "${FLASH}${YELLOW}${BOLD}"
+    log "   There is an exception to the /logs/ if the numbered logs exist after 180 days" "WARN" "${RED}${BOLD}"
+    log "This will not delete anything in any folder called /revisions/" "WARN" "${FLASH}${YELLOW}${BOLD}"
+    log " " "INFO" "${GREEN}${BOLD}"
 }
 
 # Checking the environment to start
@@ -118,7 +131,9 @@ check_env_start() {
         exit 1
     fi
     log "Changed to directory: $KIWI" "INFO" "${CYAN}"
-    local initial_space=$(get_available_space_mb)
+    
+    # Bug Fix: Removed 'local' here so it properly updates the global variable for env_finish
+    initial_space=$(get_available_space_mb)
     log "Initial available disk space for $KIWI: ${initial_space} MB" "INFO" "${CYAN}${BOLD}"
     if [[ $initial_space -lt 100 ]]; then
         log "WARNING: Available space is critically low (<100 MB). Proceed with caution." "WARN" "${YELLOW}${BOLD}"
@@ -127,47 +142,93 @@ check_env_start() {
 
 # Generic purge function to handle common find options and logging
 purge_files() {
-    local pattern="$1"
+    local search_pattern="$1"
     local days="$2"
     local description="$3"
-    local exclude_logs="${4:-true}"
+    local excludes="${4:-true}"
     local force="${5:-true}"
 
-    log "Purging files matching '$pattern' older than ${days} days: $description" "INFO" "${CYAN}${BOLD}"
+    # Set up fallback for actime if not exported globally
+    local time_type="${actime:-mtime}"
 
-    local find_cmd="find ."
-    # This excludes the looking into any logs VUE folders
-    if [[ $exclude_logs == true ]]; then
-        find_cmd="$find_cmd -not -path '*/logs/*'"
+    log "Purging files matching '$search_pattern' older than ${days} days: $description" "INFO" "${CYAN}${BOLD}"
+
+    # 1. Base command and path setup
+    local find_cmd=(find "$KIWI")
+
+    # 2. Build exclusion rules dynamically
+    if [[ "$excludes" == true ]]; then
+        local exclude_patterns=(
+            '*/rev/*' 
+            '*/logs/*' 
+            '*/services/*' 
+            '*/Revisions/*' 
+            '*/Backups/*' 
+            '*/backups/*'
+        )
+
+        for p in "${exclude_patterns[@]}"; do
+            find_cmd+=(-not -path "$p")
+        done
     fi
-    find_cmd="$find_cmd \( -name '$pattern' \) -${actime} +$days -print -exec rm ${force:+-f} {} \;"
 
-    # Execute and capture deleted files for potential size calc if needed
-    eval "$find_cmd" | while read -r file; do
-        log "Deleted: $file" "DEBUG"
-    done
+    # 3. Append the core search criteria
+    find_cmd+=( \( -name "$search_pattern" \) -"$time_type" +"$days" -print )
+
+    # 4. Handle Execution vs Dry Run with Live Searching Feedback
+    if [[ "$DRY_RUN" == false ]]; then
+        if [[ "$force" == true ]]; then
+            find_cmd+=("-exec" "rm" "-f" "{}" ";")
+        else
+            find_cmd+=("-exec" "rm" "{}" ";")
+        fi
+        
+        log "Searching and processing..." "INFO" "${YELLOW}${BOLD}"
+        local count=0
+
+        "${find_cmd[@]}" 2>/dev/null | while read -r file; do
+            count=$((count + 1))
+            # Prints a dynamic count that updates in place on the terminal
+            log "Searching and processing... ($count matches handled)" "INFO" "${YELLOW}${BOLD}"
+            log "Deleted: $file" "DEBUG"
+        done || true
+        
+        # Clear the line after the search block finishes
+        echo -ne "\r\033[K" 
+    else
+        # Dry Run Visual Aid
+        log "Dry Run: Scanning directory..." "INFO" "${BLUE}${BOLD}"
+        local count=0
+
+        "${find_cmd[@]}" 2>/dev/null | while read -r file; do
+            count=$((count + 1))
+            log "Dry Run: Scanning directory... ($count matches found)" "INFO" "${BLUE}${BOLD}"
+            log "Dry Run Test: $file" "WARN"
+        done || true
+        
+        # Clear the line after the search block finishes
+        echo -ne "\r\033[K"
+    fi
 }
 
 # Purging Backup Files
 purge_backups() {
-    local PURGEDAYS=15
+    local PURGEDAYS=30
     log "Setting Purge Days to $PURGEDAYS for edi and backup files but omitting any logs folders" "INFO" "${YELLOW}${BOLD}"
     purge_files "*.eda" $PURGEDAYS "EDA backup files" true true
     purge_files "*.gz" $PURGEDAYS "GZ compressed files" true true
     purge_files "*.dump" $PURGEDAYS "Dump files" true true
     purge_files "*.tar" $PURGEDAYS "TAR archive files" true true
-    purge_files "*.save" $PURGEDAYS "Save files" true false  # No -f for .save
-    # Kiwi kiwi to host ot host to kiwi (example ESP, HRMS or SAP)
-    purge_files "RX??????.DA" $PURGEDAYS "RX DA files" false true
-    purge_files "TX??????.DA" $PURGEDAYS "TX DA files" false true
-    purge_files "IM*.DA" $PURGEDAYS "IM DA files" false true
+    purge_files "*.save" $PURGEDAYS "Save files"  true true
+    purge_files "RX??????.DA" $PURGEDAYS "RX DA files"  true true
+    purge_files "TX??????.DA" $PURGEDAYS "TX DA files"  true true
+    purge_files "IM*.DA" $PURGEDAYS "IM DA files"  true true
 }
 
 # Purging Non VUE Files
 purge_nonVUE() {
-    local PURGEDAYS=1
+    local PURGEDAYS=2
     log "Setting Purge Days to $PURGEDAYS for non VUE files but omitting any logs folders" "INFO" "${YELLOW}${BOLD}"
-    # Normal temp files from the Kiwiplan application
     purge_files "*.TM" $PURGEDAYS "TM temp files" true true
     purge_files "*.tm" $PURGEDAYS "tm temp files" true true
     purge_files "*.LS" $PURGEDAYS "LS temp files" true true
@@ -176,9 +237,8 @@ purge_nonVUE() {
     purge_files "*.TXT" $PURGEDAYS "TXT files (upper)" true true
     purge_files "*.log" $PURGEDAYS "LOG files" true true
     purge_files "*.LOG" $PURGEDAYS "LOG files (upper)" true true
-    purge_files "*.csv" $PURGEDAYS "CSV files" true false  # No -f
+    purge_files "*.csv" $PURGEDAYS "CSV files"  true true
     purge_files "TX*.DA" $PURGEDAYS "TX DA files" true true
-    # Files when bad things happen
     purge_files "*.KD" $PURGEDAYS "KD error files" true true
     purge_files "*.KS" $PURGEDAYS "KS error files" true true
     purge_files "*.badlock" $PURGEDAYS "Badlock files" true true
@@ -187,31 +247,29 @@ purge_nonVUE() {
     purge_files "TESTNOKW" $PURGEDAYS "TESTNOKW files" true true
     purge_files "[BCLOPRU]???C*.DA" $PURGEDAYS "Pattern DA files" true true
     purge_files "*.S31" $PURGEDAYS "S31 files" true true
-    purge_files "AR??????" $PURGEDAYS "AR files" true false  # No -f
-    purge_files "SQLERROR*" $PURGEDAYS "SQLERROR files" true false  # No -f
+    purge_files "AR??????" $PURGEDAYS "AR files"  true true
+    purge_files "SQLERROR*" $PURGEDAYS "SQLERROR files"  true true
     purge_files "*.unknown" $PURGEDAYS "Unknown files" true true
     purge_files "core.*" $PURGEDAYS "Core dump files" true true
     purge_files "fort.*" $PURGEDAYS "Fortran dump files" true true
-    # Backups
     purge_files "*.OLD" $PURGEDAYS "OLD backup files" true true
     purge_files "*.old" $PURGEDAYS "old backup files" true true
     purge_files "*.BU" $PURGEDAYS "BU backup files" true true
     purge_files "*.BACKUP" $PURGEDAYS "BACKUP files" true true
     purge_files "*.NEW" $PURGEDAYS "NEW temp files" true true
-    purge_files "*.SQLINFO*" $PURGEDAYS "NEW temp files" true true
-    purge_files "*.SQLQRY*" $PURGEDAYS "NEW temp files" true true
-    purge_files "*.Trace*" $PURGEDAYS "NEW temp files" true true
+    purge_files "SQLQRY*" $PURGEDAYS "SQLQRY files" true true
+    purge_files "SQLINFO*" $PURGEDAYS "SQLINFO files" true true
 }
 
 # Purging VUE files
 purge_VUE() {
-    local PURGEDAYS=15
+    local PURGEDAYS=30
     log "Setting Purge Days to $PURGEDAYS for VUE files" "INFO" "${YELLOW}${BOLD}"
-    # Refresh files and logs
-    find . \( -name "*.LK" \) -not -path "*/logs/*" -${actime} +5 -print -exec rm {} \;
-    find . \( -name "refresh.log.*" \) -not -path "*/logs/*" -${actime} +1 -print -exec rm {} \;
-    # VUE Files TSS, QMS, PCS, CSC, PIC
-    purge_files "*.xml" $PURGEDAYS "XML VUE files" true true
+    purge_files "*.LK" $PURGEDAYS "Lock files" true true
+    purge_files "refresh.log.*" $PURGEDAYS "Refresh VUE files" true true
+    purge_files "PO*.xml" $PURGEDAYS "XML VUE files" true true
+    purge_files "R*.xml" $PURGEDAYS "XML VUE files" true true
+    purge_files "KP*.xml" $PURGEDAYS "XML VUE files" true true
     purge_files "*.DAT" $PURGEDAYS "DAT VUE files" true true
     purge_files "*.SENT" $PURGEDAYS "SENT VUE files" true true
     purge_files "*.filtered" $PURGEDAYS "Filtered VUE files" true true
@@ -223,13 +281,14 @@ purge_over_due() {
     log "Setting Purge Days to $PURGEDAYS for overdue transaction files that were not fixed or processed" "WARN" "${FLASH}${RED}${BOLD}"
     local patterns=(".edi" ".err" ".edx" ".cpy")
     for pat in "${patterns[@]}"; do
-        purge_files "$pat" $PURGEDAYS "Overdue ${pat} files" false true
+        # Bug Fix: Prepend wildcard * onto extension string so find works natively
+        purge_files "*$pat" $PURGEDAYS "Overdue ${pat} files" true true
     done
 }
 
 # Purging VUE logs Files
 purge_VUE_logs() {
-    local PURGEDAYS=30
+    local PURGEDAYS=60
     log "Setting Purge Days to $PURGEDAYS for VUE log files that just stick around for no reason" "WARN" "${FLASH}${RED}${BOLD}"
     purge_files "*.log.txt.[0-9]" $PURGEDAYS "VUE log files" true true
 }
@@ -239,7 +298,7 @@ env_finish() {
     local final_space=$(get_available_space_mb)
     local saved_space=$((final_space - initial_space))
     if [[ $saved_space -lt 0 ]]; then
-        saved_space=0  # In case of minor fluctuations
+        saved_space=0
     fi
     log "Final available disk space for $KIWI: ${final_space} MB" "INFO" "${CYAN}${BOLD}"
     log "Freed up drive space: ${saved_space} MB" "INFO" "${GREEN}${BOLD}"
@@ -248,8 +307,8 @@ env_finish() {
 }
 
 # Main execution
-create_folders
-initial_space=$(get_available_space_mb)  # Global for env_finish
+initial_space=0 # Pre-declaration for safety under set -u
+set_environment
 rotate_log
 banner
 check_env_start
