@@ -1,0 +1,214 @@
+#!/bin/bash
+#Type:Utility
+#########################################################
+# Script: Kiwiplan Java Services Menu - PLANTID aware + Smart Log Monitoring + vLink Control
+# Created by: Steve Ling
+# Revision: 2026-07-21
+#########################################################
+
+#PLANTID="${PLANTID:-}"   # Default to plant code if not set externally if not set, but should be set in the environment before running this script
+
+STOP_SCRIPT="/KIWI/services/sites/${PLANTID}/current/bin/stopservers.sh"
+START_SCRIPT="/KIWI/services/sites/${PLANTID}/current/bin/startservers.sh"
+
+VLINK_BIN="/KIWI/site_${PLANTID}/VLINK/current/vlink"
+
+LOG1="/KIWI/services/sites/${PLANTID}/current/logs/kiwiplan.log.txt"
+LOG2="/KIWI/services/sites/${PLANTID}/current/logs/startservers.log.txt"
+
+is_plant_service() {
+    local cmd="$1"
+    echo "$cmd" | grep -qE "/KIWI/services/.*${PLANTID}|/KIWI/services/sites/${PLANTID}|/KIWI/services/web/${PLANTID}"
+}
+
+show_summary() {
+    echo "=================================================================="
+    echo "JAVA SERVICES SUMMARY - PLANT: ${PLANTID^^} - $(hostname) - $(date '+%Y-%m-%d %H:%M')"
+    echo "=================================================================="
+    printf "%-7s %-7s %-7s %-9s %s\n" "PID" "CPU%" "MEM%" "UPTIME" "SERVICE"
+    echo "------------------------------------------------------------------"
+
+    count=0
+    ps -eo user,pid,%cpu,%mem,etime,command 2>/dev/null | \
+    grep -i java | grep -v "grep" | while read -r line; do
+        cmd=$(echo "$line" | sed 's/^[^ ]* *[0-9]* *[0-9.]* *[0-9.]* *[^ ]* *//')
+        if ! is_plant_service "$cmd"; then continue; fi
+
+        ((count++))
+        pid=$(echo "$line" | awk '{print $2}')
+        cpu=$(echo "$line" | awk '{print $3}')
+        mem=$(echo "$line" | awk '{print $4}')
+        etime=$(echo "$line" | awk '{print $5}')
+
+        if echo "$cmd" | grep -q "QuarkusEntryPoint"; then
+            service="Keycloak/Identity"
+        elif echo "$cmd" | grep -q "kiwiplan.launcher.Launcher"; then
+            service="Kiwiplan Launcher"
+        elif echo "$cmd" | grep -q "catalina.startup.Bootstrap"; then
+            service="Tomcat Web"
+        elif echo "$cmd" | grep -q "vlink.jar"; then
+            service="vLink"
+        elif echo "$cmd" | grep -q "phoenix.ActivationGroupInit"; then
+            service=$(echo "$cmd" | sed -E 's/.*servicelogfile=([^.]+).*/\1/' | tr '_' ' ')
+        else
+            service="Other"
+        fi
+        service=$(echo "$service" | cut -c1-35)
+        printf "%-7s %-7s %-7s %-9s %s\n" "$pid" "${cpu}%" "${mem}%" "$etime" "$service"
+    done
+    echo "------------------------------------------------------------------"
+    total=$(ps -eo pid,command | grep -i java | grep -v grep | grep -E "/KIWI/.*${PLANTID}" | wc -l)
+    echo "Total ${PLANTID^^} Java processes: $total"
+}
+
+vlink_status() {
+    if [ -x "$VLINK_BIN" ]; then
+        "$VLINK_BIN" status
+    else
+        echo "vLink binary not found at $VLINK_BIN"
+    fi
+}
+
+vlink_stop() {
+    echo "Stopping vLink..."
+    if [ -x "$VLINK_BIN" ]; then
+        vlink_status | grep -q "UP" && "$VLINK_BIN" stop || echo "vLink is not running."
+        echo "vLink stop command executed."
+    else
+        echo "Error: vLink binary not found at $VLINK_BIN"
+    fi
+}
+
+vlink_start() {
+    echo "Starting vLink..."
+    if [ -x "$VLINK_BIN" ]; then
+        vlink_status | grep -q "UP" && echo "vLink is already running." || "$VLINK_BIN" start
+        echo "vLink start command executed."
+    else
+        echo "Error: vLink binary not found at $VLINK_BIN"
+    fi
+}
+
+stop_services() {
+    echo "Stopping all ${PLANTID^^} services (excluding vLink)..."
+    if [ -x "$STOP_SCRIPT" ]; then
+        "$STOP_SCRIPT"
+        echo "Stop command executed."
+    else
+        echo "Error: Stop script not found at $STOP_SCRIPT"
+    fi
+}
+
+monitor_start_logs() {
+    echo "Monitoring startup logs..."
+
+    echo "→ Tailing $LOG1 (waiting for Jetty start)..."
+    tail -f "$LOG1" 2>/dev/null | while read -r line; do
+        echo "$line"
+        if echo "$line" | grep -q "kiwiplan.launcher.ServiceFactory - Started Jetty"; then
+            echo "=== Jetty Started - Switching log ==="
+            pkill -P $$ tail 2>/dev/null
+            break
+        fi
+    done
+
+    echo "→ Tailing $LOG2 (waiting for JNI completion)..."
+    tail -f "$LOG2" 2>/dev/null | while read -r line; do
+        echo "$line"
+        if echo "$line" | grep -q "Init JNI:.*completed"; then
+            echo "=== JNI Initialization Completed ==="
+            echo "Startup sequence finished!"
+            pkill -P $$ tail 2>/dev/null
+            break
+        fi
+    done
+}
+
+start_services() {
+    echo "Checking if ${PLANTID^^} services are stopped..."
+    sleep 3
+    running=$(ps -ef | grep -i java | grep -v grep | grep -E "/KIWI/.*${PLANTID}" | wc -l)
+   
+    if [ "$running" -gt 0 ]; then
+        echo "Warning: $running Java processes still running."
+        echo "Please run Stop first."
+        return 1
+    fi
+
+    if [ -x "$START_SCRIPT" ]; then
+        echo "Starting services for plant ${PLANTID^^}..."
+        "$START_SCRIPT" &
+        START_PID=$!
+
+        sleep 5
+        monitor_start_logs
+
+        echo "Start command completed."
+        sleep 3
+        show_summary
+    else
+        echo "Error: Start script not found at $START_SCRIPT"
+    fi
+}
+
+# Main Menu
+while true; do
+    clear
+    echo "================================================================"
+    echo "   KIWIPLAN SERVICES MENU - PLANT: ${PLANTID^^} - $(hostname)"
+    echo "================================================================"
+    echo "1) Show Summary (one line per service)"
+    echo "2) Show Detailed View"
+    echo "3) Stop Main Services (excl. vLink)"
+    echo "4) Start Main Services"
+    echo "5) vLink Status"
+    echo "6) Stop vLink"
+    echo "7) Start vLink"
+    echo "8) Exit"
+    echo "================================================================"
+    read -p "Enter your choice [1-8]: " choice
+
+    case $choice in
+        1)
+            show_summary
+            read -p "Press Enter to continue..."
+            ;;
+        2)
+            echo "Showing detailed view for ${PLANTID^^} services..."
+            ps -ef | grep -i java | grep -E "/KIWI/.*${PLANTID}" | grep -v grep
+            read -p "Press Enter to continue..."
+            ;;
+        3)
+	    echo "Stopping ${PLANTID^^} main services..."
+            stop_services
+            read -p "Press Enter to continue..."
+            ;;
+        4)
+	    echo "Starting ${PLANTID^^} main services..."
+            start_services
+            read -p "Press Enter to continue..."
+            ;;
+        5)
+            vlink_status
+            read -p "Press Enter to continue..."
+            ;;
+        6)
+	    echo "Stopping ${PLANTID^^} vlink services..."
+            vlink_stop
+            read -p "Press Enter to continue..."
+            ;;
+        7)
+	    echo "Starting ${PLANTID^^} vlink services..."
+            vlink_start
+            read -p "Press Enter to continue..."
+            ;;
+        8)
+            echo "Goodbye!"
+            exit 0
+            ;;
+        *)
+            echo "Invalid option."
+            sleep 1
+            ;;
+    esac
+done

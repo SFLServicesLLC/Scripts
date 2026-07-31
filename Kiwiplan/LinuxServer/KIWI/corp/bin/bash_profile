@@ -576,6 +576,9 @@ site_delete(){
         log "Deleting the Web Folder" "INFO" "${YELLOW}""${BOLD}"
         rm -rf $KIWIBASE/services/web/"$SITE"
         log "Deleted the Web Folder" "INFO" "${RED}""${BOLD}"
+        log "Deleting the Identity Folder" "INFO" "${YELLOW}""${BOLD}"
+        rm -rf $KIWIBASE/services/identity/"$SITE"
+        log "Deleted the Identity Folder" "INFO" "${RED}""${BOLD}"
       ;;
       *)
         main_menu
