@@ -23,7 +23,7 @@
 # intentionally excluded - where the log lists both an mshta and a
 # KiwiWebLauncher variant of the same app, only the Launcher variant is used.
 #
-# Created by: Steve Ling & claude.ai, 2025-04-05
+# Created by: Steve Ling & claude.ai, 2024-06-05
 #
 # Usage:
 #   ./generate_shortcuts_ps1.sh [path/to/summary.log.txt] [path/to/output.ps1]
@@ -251,24 +251,61 @@ ${removed_lines}
     machine id where the database lookup returned nothing):
 ${skipped_lines}
 
+.PARAMETER PublicDesktop
+    Force shortcuts onto the server's Public Desktop (C:\Users\Public\Desktop)
+    instead of the current user's desktop. Useful when this script is run
+    non-interactively (e.g. as a scheduled task or service account) so the
+    shortcuts land somewhere every logged-in user can actually see them.
+
 .NOTES
     - Run this script ON THE WINDOWS MACHINE (PowerShell, not WSL/bash).
     - Requires the KIWI_WEB_PATH environment variable to be set on the
       machine, OR edit \$KiwiWebLauncherPath below to point directly at
       KiwiWebLauncher.exe.
-    - Shortcuts are placed in a "${PLANTID}" folder on the current user's
-      desktop, created automatically if needed.
+    - Shortcuts are placed in a "${PLANTID}" folder, created automatically
+      if needed, under one of:
+        * the current user's desktop (default, interactive use), or
+        * the server's Public Desktop - used automatically when no
+          interactive user desktop is available (e.g. running as SYSTEM/a
+          service account on the server), or always when -PublicDesktop
+          is passed.
+    - Run like this for public desktop icons (e.g. scheduled task, service account, or non-interactive use):
+        powershell.exe -ExecutionPolicy Bypass -File Create-${PLANTID}-KiwiplanShortcuts.ps1 -PublicDesktop
 #>
+
+[CmdletBinding()]
+param(
+    [switch]\$PublicDesktop
+)
 
 # ----------------------------- Configuration -----------------------------
 
 \$PlantId = "${PLANTID}"
+\$PublicDesktopPath = "C:\Users\Public\Desktop"
 
 # Shortcuts go in <Desktop>\<PlantId>\ instead of directly on the desktop,
 # so shortcuts for multiple plants don't collide or get mixed together.
-\$DesktopPath = Join-Path ([Environment]::GetFolderPath("Desktop")) \$PlantId
-# For the All Users / Public desktop instead, use:
-# \$DesktopPath = Join-Path "C:\Users\Public\Desktop" \$PlantId
+# Resolve which desktop root to use: the current user's desktop, unless
+# -PublicDesktop was passed, or no interactive user desktop is available
+# (e.g. this is running as SYSTEM/a service account on the server).
+if (\$PublicDesktop) {
+    \$DesktopRoot = \$PublicDesktopPath
+} else {
+    \$userDesktop = [Environment]::GetFolderPath("Desktop")
+    \$noInteractiveDesktop = ([string]::IsNullOrWhiteSpace(\$userDesktop)) -or
+        (\$userDesktop -like "*systemprofile*") -or
+        (\$userDesktop -like "*ServiceProfiles*") -or
+        (-not (Test-Path (Split-Path \$userDesktop -Parent)))
+
+    if (\$noInteractiveDesktop) {
+        Write-Host "No interactive user desktop detected (running as \$env:USERNAME) - using the Public Desktop instead."
+        \$DesktopRoot = \$PublicDesktopPath
+    } else {
+        \$DesktopRoot = \$userDesktop
+    }
+}
+
+\$DesktopPath = Join-Path \$DesktopRoot \$PlantId
 
 if (-not (Test-Path \$DesktopPath)) {
     New-Item -ItemType Directory -Path \$DesktopPath -Force | Out-Null
