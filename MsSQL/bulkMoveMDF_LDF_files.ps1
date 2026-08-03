@@ -1,7 +1,6 @@
 # ==============================================================================
 # Script: Bulk Move SQL Server User Database Files (.mdf / .ldf)
-# Purpose: Moves all non-system database files using pure .NET (No Invoke-Sqlcmd)
-# Safety Check: Ensures the target SQL host is running on PHYSICAL HARDWARE
+# Purpose: Moves all non-system database files via UNC shares using pure .NET
 # Created by: Steve Ling and Gemini 2026-08-03
 # ==============================================================================
 
@@ -62,36 +61,6 @@ Function Get-SqlData {
 # ------------------------------------------------------------------------------
 # Script Execution
 # ------------------------------------------------------------------------------
-
-# 1. PHYSICAL SERVER HARDWARE CHECK
-Write-Host "Connecting to [$targetServer] and checking host platform..." -ForegroundColor Cyan
-
-$hardwareCheckQuery = "
-    SELECT 
-        virtual_machine_type_desc
-    FROM sys.dm_os_sys_info;
-"
-
-try {
-    $hwResult = Get-SqlData -Server $targetServer -Query $hardwareCheckQuery
-    $vmType   = $hwResult.Rows[0].virtual_machine_type_desc
-
-    if ($vmType -ne 'NONE') {
-        Write-Host "==================================================" -ForegroundColor Red
-        Write-Host "ABORTED: Target server [$targetServer] is a VIRTUAL MACHINE ($vmType)!" -ForegroundColor Red
-        Write-Host "This script is configured to run ONLY on Physical Hardware." -ForegroundColor Red
-        Write-Host "==================================================" -ForegroundColor Red
-        exit
-    } else {
-        Write-Host "PHYSICAL SERVER CONFIRMED ($vmType). Proceeding with database inventory..." -ForegroundColor Green
-    }
-} catch {
-    Write-Host "ERROR: Failed to query hardware info on [$targetServer]. Aborting for safety." -ForegroundColor Red
-    Write-Host $_.Exception.Message -ForegroundColor Red
-    exit
-}
-
-# 2. FILE INVENTORY & MOVE PROCESS
 $getFilesQuery = "
     SELECT 
         d.name AS DatabaseName,
@@ -103,6 +72,8 @@ $getFilesQuery = "
     WHERE d.name NOT IN ('master', 'model', 'msdb', 'tempdb')
       AND d.state_desc = 'ONLINE';
 "
+
+Write-Host "Connecting to [$targetServer] to inspect database files..." -ForegroundColor Cyan
 
 try {
     # Fetch file mappings using .NET SqlClient
@@ -116,7 +87,7 @@ try {
     # Group files by Database
     $databases = $fileList | Group-Object -Property DatabaseName
 
-    # Resolve UNC paths for file transfer from remote tools machine
+    # Resolve UNC paths for file transfer
     $serverHost = $targetServer.Split('\')[0]
     $uncMdfPath = "\\$serverHost\" + ($newMdfPath -replace ':', '$')
     $uncLdfPath = "\\$serverHost\" + ($newLdfPath -replace ':', '$')
@@ -130,7 +101,7 @@ try {
         Write-Host "Processing Database: [$dbName]" -ForegroundColor Yellow
         Write-Host "==================================================" -ForegroundColor Cyan
 
-        # Take Database Offline
+        # 1. Take Database Offline
         Write-Host "-> Setting [$dbName] OFFLINE..." -ForegroundColor Gray
         $offlineQuery = "ALTER DATABASE [$dbName] SET OFFLINE WITH ROLLBACK IMMEDIATE;"
         Execute-SqlNonQuery -Server $targetServer -Query $offlineQuery
@@ -154,17 +125,17 @@ try {
                 # UNC Path for source file
                 $oldUncPath = "\\$serverHost\" + ($oldPath -replace ':', '$')
 
-                # Update Metadata in master DB
+                # 2. Update Metadata in master DB
                 Write-Host "-> Updating system catalog for logical file [$logicalName]..." -ForegroundColor Gray
                 $alterCatalogQuery = "ALTER DATABASE [$dbName] MODIFY FILE (NAME = '$logicalName', FILENAME = '$targetLocalPath');"
                 Execute-SqlNonQuery -Server $targetServer -Query $alterCatalogQuery
 
-                # Physically move file on disk via administrative share
+                # 3. Physically move file on disk via administrative share
                 Write-Host "-> Moving file [$fileName] to [$targetLocalPath]..." -ForegroundColor Gray
                 Move-Item -Path $oldUncPath -Destination $targetUncPath -Force -ErrorAction Stop
             }
 
-            # Bring Database Back Online
+            # 4. Bring Database Back Online
             Write-Host "-> Setting [$dbName] ONLINE..." -ForegroundColor Green
             $onlineQuery = "ALTER DATABASE [$dbName] SET ONLINE;"
             Execute-SqlNonQuery -Server $targetServer -Query $onlineQuery
