@@ -1,26 +1,21 @@
 # ==============================================================================
-# Script: Multi-Server Remote DBCC CHECKDB Monitor
-# Purpose: Runs DBCC CHECKDB across SQL instances and logs to a remote UNC share
+# Script: Multi-Server Remote DBCC CHECKDB Monitor (Native .NET)
+# Purpose: Runs DBCC CHECKDB across SQL instances using System.Data.SqlClient
 # Created by: Steve Ling and Gemini 2026-08-03
 # ==============================================================================
-
-#Install module first if needed
-#Install-Module -Name SqlServer -AllowClobber -Force
-
-Import-Module SqlServer -ErrorAction SilentlyContinue
 
 # ------------------------------------------------------------------------------
 # Configuration
 # ------------------------------------------------------------------------------
 # Target SQL Servers (Hostnames, IPs, or Hostname\Instance)
 $targetServers = @(
-    "Server-001",
-    "Server-003",
-    "Server-005"
+    "SFL-SQL-001",
+    "SFL-SQL-003",
+    "SFL-SQL-005"
 )
 
 # Remote network log share (UNC Path)
-$remoteLogDirectory = "\\bigberta.onling.com\Backups\Logs\SQLChecks"
+$remoteLogDirectory    = "\\bigberta.onling.com\Backups\Logs\SQLChecks"
 
 # Local fallback log directory (in case the network share is offline)
 $localFallbackDirectory = "C:\Scripts\Logs\SQLChecks_Fallback"
@@ -29,14 +24,13 @@ $localFallbackDirectory = "C:\Scripts\Logs\SQLChecks_Fallback"
 if (Test-Path -Path $remoteLogDirectory) {
     $activeLogDirectory = $remoteLogDirectory
 } else {
-    # If remote folder doesn't exist, attempt to create it; otherwise use fallback
     try {
         New-Item -ItemType Directory -Path $remoteLogDirectory -ErrorAction Stop | Out-Null
         $activeLogDirectory = $remoteLogDirectory
     } catch {
         $activeLogDirectory = $localFallbackDirectory
         if (-not (Test-Path $localFallbackDirectory)) {
-            New-Item -ItemType Directory -Path $localFallbackDirectory | Out-Null
+            New-Item -ItemType Directory -Path $localFallbackDirectory -Force | Out-Null
         }
     }
 }
@@ -53,7 +47,6 @@ Function Write-Log {
     try {
         Add-Content -Path $Path -Value $logEntry -ErrorAction Stop
     } catch {
-        # Secondary fallback writing if a file lock or network interruption occurs mid-stream
         $fallbackPath = Join-Path -Path $localFallbackDirectory -ChildPath (Split-Path -Leaf $Path)
         Add-Content -Path $fallbackPath -Value "[$timestamp] [FALLBACK LOG] $Message"
     }
@@ -78,33 +71,49 @@ foreach ($server in $targetServers) {
         Write-Log "WARNING: Remote log share [$remoteLogDirectory] was unreachable. Using local fallback path." -Path $logFile
     }
 
-    try {
-        # Fetch all online databases except tempdb
-        $getDbQuery = "SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' AND name != 'tempdb'"
-        
-        # Test connection & fetch DB list (Added -TrustServerCertificate)
-        $databases = Invoke-Sqlcmd -ServerInstance $server -Query $getDbQuery -ConnectionTimeout 10 -TrustServerCertificate -ErrorAction Stop
+    # Connection String with explicit TrustServerCertificate=True
+    $connString = "Server=$server;Database=master;Integrated Security=True;TrustServerCertificate=True;Encrypt=True;Connect Timeout=15;"
+    $connection = New-Object System.Data.SqlClient.SqlConnection($connString)
 
-        foreach ($db in $databases) {
-            $dbName = $db.name
+    try {
+        $connection.Open()
+        
+        # Get list of online databases (excluding tempdb)
+        $getDbQuery = "SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' AND name != 'tempdb'"
+        $cmd        = $connection.CreateCommand()
+        $cmd.CommandText = $getDbQuery
+        
+        $adapter = New-Object System.Data.SqlClient.SqlDataAdapter($cmd)
+        $dataset = New-Object System.Data.DataSet
+        [void]$adapter.Fill($dataset)
+        
+        $databases = $dataset.Tables[0]
+
+        foreach ($row in $databases) {
+            $dbName = $row.name
             Write-Log "Running DBCC CHECKDB on [$server] -> [$dbName]..." -Path $logFile
             
-            # NO_INFOMSGS ensures output is clean unless corruption/errors are found
-            $checkQuery = "DBCC CHECKDB ([$dbName]) WITH NO_INFOMSGS, ALL_ERRORMSGS;"
+            $checkCmd = $connection.CreateCommand()
+            $checkCmd.CommandText = "DBCC CHECKDB ([$dbName]) WITH NO_INFOMSGS, ALL_ERRORMSGS;"
+            $checkCmd.CommandTimeout = 0 # Prevent command timeouts during long DBCC scans
             
             try {
-                # QueryTimeout 0 prevents command timeouts on large DBs (Added -TrustServerCertificate)
-                Invoke-Sqlcmd -ServerInstance $server -Query $checkQuery -QueryTimeout 0 -TrustServerCertificate -ErrorAction Stop
+                [void]$checkCmd.ExecuteNonQuery()
                 Write-Log "SUCCESS: [$dbName] passed on [$server]." -Path $logFile
             } catch {
                 Write-Log "CRITICAL ERROR: Corruption or failure detected in [$dbName] on [$server]!" -Path $logFile
                 Write-Log "Details: $($_.Exception.Message)" -Path $logFile
             }
         }
+        
+        $connection.Close()
+
     } catch {
-        # Server unreachable, offline, or permissions denied
         Write-Log "CONNECTION FAILED: Unable to query SQL Server [$server]." -Path $logFile
         Write-Log "Details: $($_.Exception.Message)" -Path $logFile
+        if ($connection.State -eq [System.Data.ConnectionState]::Open) {
+            $connection.Close()
+        }
     }
 
     Write-Log "Completed DBCC CHECKDB routine for $server." -Path $logFile
