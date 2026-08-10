@@ -14,6 +14,7 @@
 # 2025-07-26 SFL Added more logic for display
 # 2025-08-17 SFL Added more logic around adding and deleting sites
 # 2026-05-16 SFL Added auto import logic for the datadump.sh files
+# 2026-08-05 SFL Replaced manual path entry in file_check with interactive dir/file picker
 #
 #########################################################
 #
@@ -153,6 +154,7 @@ banner(){
   }
   # ==================== HOSTS ====================
   log "${BLUE}║${NC} ${YELLOW}Linux${NC}                ${BLUE}│${NC}                       ${BLUE}│${NC}              ${BLUE}║" "INFO" "${NC}"
+  print_host "sfl-lin-003" "192.168.101.10" "RedHat"
   print_host "sfl-lin-004" "192.168.101.20" "RedHat"
   log "${BLUE}║${NC} ${YELLOW}KDG${NC}                  ${BLUE}│${NC}                       ${BLUE}│${NC}              ${BLUE}║" "INFO" "${NC}"
   print_host "sfl-kdg-001" "192.168.101.16" "Win22"
@@ -164,8 +166,8 @@ banner(){
   print_host "sfl-rds-004" "192.168.101.12" "Win22"
   print_host "sfl-rds-005" "192.168.101.13" "Win22"
   print_host "sfl-rds-006" "192.168.101.18" "Win22"
-  log "${BLUE}║${NC} ${YELLOW}VUE Only${NC}             ${BLUE}│${NC}                       ${BLUE}│${NC}              ${BLUE}║" "INFO" "${NC}"
-  print_host "sfl-vue-001" "192.168.101.18" "Win25"
+#  log "${BLUE}║${NC} ${YELLOW}VUE Only${NC}             ${BLUE}│${NC}                       ${BLUE}│${NC}              ${BLUE}║" "INFO" "${NC}"
+#  print_host "sfl-vue-001" "192.168.101.18" "Win25"
   log "${BLUE}╚══════════════════════╧═══════════════════════╧══════════════╝" "INFO" "${NC}"
   #
   log "" "INFO" "${GREEN}${BOLD}"
@@ -202,9 +204,10 @@ main_menu(){
   log "" "INFO" "${NC}" 
   log "X) Exit" "INFO" "${RED}""${BOLD}"
   log "" "INFO" "${NC}" 
-  echo -en "${CYAN}""${BOLD}" "Default [S] : "
+  #echo -en "${CYAN}""${BOLD}" "Default [S] : "
   #read -t 10 choice #Time out of 10 sec
-  read choice
+  log "--------------------------------" "INFO" "${BLUE}""${BOLD}"
+    read -e -i "" -p "Choice : " choice
   case "$choice" in
     "A"|"a")
             log "Chose option A" "INFO" "${YELLOW}""${BOLD}"
@@ -322,41 +325,122 @@ update_scripts(){
 }
 #
 # File to import
+#
+# Interactive directory browser: lets the user step into subdirectories
+# (or jump back up with '..') until they land on the folder containing
+# their tar file, then lists the .tar.gz files there to pick from.
+# 'T' at the directory prompt still lets them type a full path manually.
 file_check(){
   log "------------------------------------------------------------------------------------------" "INFO" "${YELLOW}""${BOLD}"
-  log " Select the directory your tar file  is located:" "INFO" "${BLUE}""${BOLD}"
+  log " Select the directory your tar file is located:" "INFO" "${BLUE}""${BOLD}"
   log "------------------------------------------------------------------------------------------" "INFO" "${YELLOW}""${BOLD}"
-  # 1. Prompt the user for the file path
-  read -p "Enter the full path and name of the file: " ARCHIVE
-  # Remove any accidental trailing or leading spaces from user input
-  ARCHIVE=$(echo "$ARCHIVE" | xargs)
-  # 2. Validate: Check if the input is empty
-  if [ -z "$ARCHIVE" ]; then
-      log "Error: No path entered, returning to main menu." "ERROR" "${RED}""${BOLD}"
-      sleep 3
-      main_menu
+
+  CURDIR="$HOME"
+  ARCHIVE=""
+
+  # 1. Browse directories until the user selects one to use
+  while true; do
+    cd "$CURDIR" 2>/dev/null || { log "Error: Cannot access $CURDIR" "ERROR" "${RED}""${BOLD}"; main_menu; return; }
+
+    log "Current directory: ${YELLOW}${BOLD}$CURDIR" "INFO" "${GREEN}""${BOLD}"
+
+    shopt -s nullglob
+    SUBDIRS=(*/)
+    shopt -u nullglob
+
+    PS3="Enter a subdirectory number, 'S' to use this directory, 'T' to type a path, or 'M' for main menu: "
+    select DCHOICE in "${SUBDIRS[@]}"; do
+      case "$REPLY" in
+        S|s)
+          break 2
+          ;;
+        T|t)
+          # -e enables readline (arrow keys/editing), -i pre-fills the line
+          # with the current directory so TAB-completion can take over from there
+          read -e -i "${CURDIR%/}/" -p "Enter/edit the directory path (TAB to autocomplete): " TYPEDDIR
+          TYPEDDIR=$(echo "$TYPEDDIR" | xargs)
+          if [ -n "$TYPEDDIR" ] && [ -d "$TYPEDDIR" ]; then
+            CURDIR="$TYPEDDIR"
+            # Go straight to listing tar files in the typed directory
+            break 2
+          else
+            log "Error: '$TYPEDDIR' is not a valid directory" "ERROR" "${RED}""${BOLD}"
+          fi
+          break
+          ;;
+        M|m)
+          main_menu
+          return
+          ;;
+        *)
+          if [ -n "$DCHOICE" ]; then
+            CURDIR="${CURDIR%/}/${DCHOICE%/}"
+          else
+            echo "Invalid selection. Please choose a valid number, S, T, or M."
+          fi
+          break
+          ;;
+      esac
+    done
+  done
+
+  # 2. List the .tar.gz files in the selected directory and let the user pick one
+  cd "$CURDIR" 2>/dev/null || { log "Error: Cannot access $CURDIR" "ERROR" "${RED}""${BOLD}"; main_menu; return; }
+
+  shopt -s nullglob
+  TARFILES=(*.tar.gz)
+  shopt -u nullglob
+
+  if [ ${#TARFILES[@]} -eq 0 ]; then
+    log "Error: No .tar.gz files found in $CURDIR, returning to main menu." "ERROR" "${RED}""${BOLD}"
+    sleep 3
+    main_menu
+    return
   fi
-  # 3. Validate: Check if the file exists
-  if [ ! -f "$ARCHIVE" ]; then
-      log "Error: File '$ARCHIVE' does not exist, returning to main menu" "ERROR" "${RED}""${BOLD}"
-      sleep 3
-      main_menu
-  fi
-  # 4. Validate: Check if it actually has a .tar.gz extension
-  if [[ "$ARCHIVE" != *.tar.gz ]]; then
-      log "Error: The file must be a tar archive, returning to main menu" "ERROR" "${RED}""${BOLD}"
-      sleep 3
-      main_menu
-  fi
-  # 5. Extract the file name and create the target folder name
+
+  PS3="Select the tar file to import, or 'T' to type the filename: "
+  select TARCHOICE in "${TARFILES[@]}"; do
+    case "$REPLY" in
+      T|t)
+        # -e enables readline (arrow keys/editing), -i pre-fills the line
+        # with the current directory so TAB-completion can browse for the file
+        read -e -i "${CURDIR%/}/" -p "Enter/edit the filename (TAB to autocomplete, must end in .tar.gz): " TYPEDFILE
+        TYPEDFILE=$(echo "$TYPEDFILE" | xargs)
+        # Accept either a full path or a bare filename inside the current directory
+        if [[ "$TYPEDFILE" == /* ]]; then
+          CANDIDATE="$TYPEDFILE"
+        else
+          CANDIDATE="${CURDIR%/}/$TYPEDFILE"
+        fi
+        if [ -n "$TYPEDFILE" ] && [ -f "$CANDIDATE" ] && [[ "$CANDIDATE" == *.tar.gz ]]; then
+          ARCHIVE="$CANDIDATE"
+          break
+        else
+          log "Error: '$TYPEDFILE' was not found or is not a .tar.gz file" "ERROR" "${RED}""${BOLD}"
+        fi
+        ;;
+      *)
+        if [ -n "$TARCHOICE" ]; then
+          ARCHIVE="$CURDIR/$TARCHOICE"
+          break
+        else
+          echo "Invalid selection. Please choose a valid number or T."
+        fi
+        ;;
+    esac
+  done
+
+  log "Selected file: ${YELLOW}${BOLD}$ARCHIVE" "INFO" "${GREEN}""${BOLD}"
+
+  # 3. Extract the file name and create the target folder name
   FULL_FILENAME=$(basename "$ARCHIVE")
   FOLDER_NAME="${FULL_FILENAME%.tar.gz}"
   DEST_DIR="$HOME/$FOLDER_NAME"
   log "File validated successfully." "INFO" "${GREEN}""${BOLD}"
   log "Creating the extract folder will be: $DEST_DIR" "INFO" "${GREEN}""${BOLD}"
-  # 6. Create destination directory
+  # 4. Create destination directory
   mkdir -p "$DEST_DIR"
-  # 7. Extract the file
+  # 5. Extract the file
   log "Extracting files, please wait..." "INFO" "${GREEN}""${BOLD}"
   if tar -xzvf "$ARCHIVE" -C "$DEST_DIR"; then
       log "Success! Files where extracted to $DEST_DIR" "INFO" "${GREEN}""${BOLD}"
@@ -364,6 +448,7 @@ file_check(){
       log "Extraction failed." "ERROR" "${RED}""${BOLD}"
       sleep 3
       main_menu
+      return
   fi
   log "Backup the license to the "$MREVS"/LICENSE folder" "INFO" "${GREEN}""${BOLD}"
   yes | cp -f $DEST_DIR/vue/*.licence $MREVS/LICENSE
@@ -374,7 +459,7 @@ site_add(){
   file_check
   log "Preparing to add a site to the environment" "INFO" "${YELLOW}""${BOLD}"
   log "Enter name for the site name : " "INFO" "${GREEN}""${BOLD}"
-  read NEW_SITE
+  read -e -i "" -p "Name : " NEW_SITE
 
   if [ -z "$NEW_SITE" ];then
     log "You have not entered a site name" "ERROR" "${RED}""${BOLD}"
@@ -465,7 +550,7 @@ site_add(){
   mv -f mes_"$REVBASE"/* .
   rmdir mes_"$REVBASE"
   export KIWI=/KIWI
-  ./mes-"$REVBASE".sh
+  ./mes-"$REVBASE".sh -s $NEW_SITE
   log "Running the importdata script for the $NEW_SITE environment and looking for them in $DATASETS" "INFO" "${GREEN}""${BOLD}"
   export KIWI=/KIWI/site_$NEW_SITE
   import_site
@@ -547,26 +632,27 @@ site_delete(){
       banner
       main_menu
     fi
-    log "Are you sure you want to delete /KIWI/site_$SITE (Y/N or 1/0)?" "INFO" "${RED}""${BOLD}"
-    read choice
+    log "Are you sure you want to delete /KIWI/site_$SITE" "INFO" "${RED}""${BOLD}"
+    log "Options are (y/Y) (n/N) or (1) or (0)?" "INFO" "${RED}""${BOLD}"
+    read -e -i "" -p "Choice : " choice
       case "$choice" in
       Y|y|1)
-	log "Deleting the MySQL databases" "INFO" "${YELLOW}""${BOLD}"
-	# Get list of databases with the specified prefix
-	databases=$(mysql -u$MYSQL_USER -p$MYSQL_PWD -e "SHOW DATABASES LIKE '${SITE}_%'" | grep -v Database)
-	# Loop through each database and drop it
-	for db in $databases; do
-	    echo "Dropping database: $db"
-	    mysql -u$MYSQL_USER -p$MYSQL_PWD -e "DROP DATABASE \`$db\`"
-	    if [ $? -eq 0 ]; then
-	        echo "Successfully dropped $db"
-	    else
-	        echo "Error dropping $db"
-	    fi
-	done
+	      log "Deleting the MySQL databases" "INFO" "${YELLOW}""${BOLD}"
+	      # Get list of databases with the specified prefix
+	      databases=$(mysql -u$MYSQL_USER -p$MYSQL_PWD -e "SHOW DATABASES LIKE '${SITE}_%'" | grep -v Database)
+	      # Loop through each database and drop it
+	      for db in $databases; do
+	        echo "Dropping database: $db"
+	        mysql -u$MYSQL_USER -p$MYSQL_PWD -e "DROP DATABASE \`$db\`"
+	        if [ $? -eq 0 ]; then
+	          echo "Successfully dropped $db"
+	        else
+	          echo "Error dropping $db"
+	        fi
+	    done
         log "Deleting the Kiwi Site Folder" "INFO" "${YELLOW}""${BOLD}"
         rm -rf $KIWIBASE/site_"$SITE"
-	log "Deleted the Kiwi Site Folder" "INFO" "${RED}""${BOLD}"
+	      log "Deleted the Kiwi Site Folder" "INFO" "${RED}""${BOLD}"
         log "Deleting the Rev Site Folder" "INFO" "${YELLOW}""${BOLD}"
         rm -f $KIWIBASE/rev/site_"$SITE"
         log "Deleted the Rev Site Folder" "INFO" "${RED}""${BOLD}"
@@ -619,6 +705,11 @@ install_mysql() {
 
   log "Select which directory has your backup to search:" "INFO" "${BLUE}""${BOLD}" 
   log "--------------------------------" "INFO" "${BLUE}""${BOLD}" 
+  log "Going back to the HOME folder to search for the database files" "INFO" "${BLUE}""${BOLD}"
+  cd $HOME
+    log "Searching for the database files in the current folder" "INFO" "${BLUE}""${BOLD}"
+  log "Please select the folder that has the database files" "INFO" "${BLUE}""${BOLD}"
+  log "--------------------------------" "INFO" "${BLUE}""${BOLD}"
   PS3="Choose a folder: "
   # Create an array of subdirectories in the current folder
   select dir in */; do

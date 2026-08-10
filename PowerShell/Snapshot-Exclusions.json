@@ -1,0 +1,10 @@
+{
+    "ExcludedVMs": [
+        "vCenter80"
+    ],
+    "ExcludedPatterns": [
+		"vCenter*",
+		"vCLS*",
+		"SFL*"
+    ]
+}

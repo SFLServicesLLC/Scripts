@@ -6,7 +6,7 @@
 # Revision: 2026-07-21
 #########################################################
 
-#PLANTID="${PLANTID:-}"   # Default to plant code if not set externally if not set, but should be set in the environment before running this script
+#PLANTID="${PLANTID:-mcc}"   # Default to mcc if not set externally
 
 STOP_SCRIPT="/KIWI/services/sites/${PLANTID}/current/bin/stopservers.sh"
 START_SCRIPT="/KIWI/services/sites/${PLANTID}/current/bin/startservers.sh"

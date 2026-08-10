@@ -5,6 +5,9 @@
 # Added by steve.ling@onling.com 20230727
 # Modified steve.ling@onling.com 20230804 
 #
+# Depricated script to capture datasets and logs and then send them to a server for pickup
+#
+#
 # This is to ask the user for which printer they wish to use
 #
 ##############################################################################

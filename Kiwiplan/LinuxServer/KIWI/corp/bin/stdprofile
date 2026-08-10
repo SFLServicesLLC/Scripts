@@ -88,6 +88,22 @@ export JAVA_HOME=/usr/lib/jvm/jre-11
 #  exit
 #fi
 
+# Prompt the user for confirmation
+echo ""
+echo "Current KWSQL_LOG value: ${KWSQL_LOG:-not set}"
+read -e -i -t 3 -p "N" "Do you want to export to turn on SQL MySQL logging? (y/Y/1): " response
+# Convert response to lowercase to handle 'Y' or 'y'
+response=$(echo "$response" | tr '[:upper:]' '[:lower:]')
+if [[ "$response" =~ ^(yes|y|1)$ ]]; then
+   export KWSQL_LOG=query
+   find ${KIWI} -type f -name "KIDSENV" -exec sed -i.bak 's/^#KWSQL_LOG=query/KWSQL_LOG=query/' {} +
+   echo "KWSQL_LOG has been set to 'query' for the session and KIDSENV file."
+   echo ""
+else
+   echo "KWSQL_LOG variable was not set."
+   echo ""
+fi
+
 if [ ! -d ${WORK} ]; then
   mkdir -p ${WORK}
   echo "8bit" > ${KIWI}/work/${LOGNAME}/PROFILE
