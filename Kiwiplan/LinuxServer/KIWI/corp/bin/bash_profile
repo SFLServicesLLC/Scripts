@@ -17,6 +17,7 @@
 # 2026-08-05 SFL Replaced manual path entry in file_check with interactive dir/file picker
 #
 #########################################################
+VERSION=1.9.0
 #
 # Environment:
 #

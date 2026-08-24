@@ -1,4 +1,6 @@
 #!/bin/bash
+VERSION=1.8.0
+#
 umask 002
 
 if [ -r $KIWI/site/KIWIENV ]; then
@@ -107,6 +109,22 @@ else
    echo ""
    echo "KWSQL_LOG variable was not set."
    echo ""
+fi
+
+if [ ! -d ${COMMSDIR} ]; then
+  mkdir -p ${COMMSDIR}
+   echo "PRINTER:98" >> ${DATA}/COMMS_PRINTER
+   echo -e "INFO: Added the COMMS_PRINTER to : ${DATA}"
+  if [ ! -d ${WORK} ]; then
+    clear
+    echo -e "ERROR: Cannot create work directory : ${COMMSDIR}"
+    echo -e "Press <Enter> to continue ... \c"
+    read key
+    exit 1
+  fi
+else
+   echo "PRINTER:98" >> ${DATA}/COMMS_PRINTER
+   echo -e "INFO: Added the COMMS_PRINTER to : ${DATA}"
 fi
 
 if [ ! -d ${WORK} ]; then
