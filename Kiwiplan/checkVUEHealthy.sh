@@ -1,28 +1,14 @@
 #!/bin/bash
 
-#===============================================================================
-# Script Name: checkVUEHealthy.sh
-# Description: Verify and manage VUE application errors and data intergrity
-# 
-# Created By: Steve Ling
-# Created On: 2025-09-23
-# 
-# Modified By: 
-# Modified On: 
-# Modification Notes: 
-# 
-VERSION=2.2.0
-# License: MIT License
-# 
-# Dependencies:]
-# Usage:
-# 
-# WARNING: 
-# 
-# Changelog:
-# - 2025-09-24: [VERSION] - [SUMMARY OF CHANGES]
-# - 2025-11-09: [VERSION] - [INITIAL CREATION]
-#===============================================================================
+# Purpose: Verify and manage VUE application errors and data intergrity
+VERSION=2.4.0
+# Author : Steven F Ling
+# Credits for some of the scripts : Randolph Domingo, Devops Teams
+# Created: 2025-09-23
+# Updated: 2025-09-24
+# Updated: 2025-11-09
+# Updated: 2026-04-05
+# Updated: 2026-08-21-23
 
 # Define color codes
 RED='\033[1;31m'
@@ -36,7 +22,7 @@ FLASH='\033[5m'
 
 # Logging configuration
 LOG_FOLDER="/KIWI/corp/bin/"
-LOG_FILE="$LOG_FOLDER/checkord.log"	# Log File
+LOG_FILE="checkord.log"	# Log File
 MAX_LOG_SIZE=$((5*1024*1024)) 			# 5MB
 LOG_DIR=$(dirname "$LOG_FILE")			# Path of logging directory
 PROCESSID=$(date +%Y%m%d_%k%M%S)        # Your own process ID
@@ -58,7 +44,7 @@ if [ ! -d "$LOG_FOLDER" ];then
     log_message "INFO" "${YELLOW}Creating log folder $LOG_FOLDER${NC}"
     mkdir -p "$LOG_FOLDER"
 else
-    log_message "INFO" "${GREEN}Log folder $LOG_FOLDER exists${NC}"
+    log_message "INFO" "${GREEN}Log folder $LOG_DIR exists${NC}"
 fi
 }
 
@@ -71,7 +57,7 @@ get_environment() {
     CSC_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.CSC_DBNAME|cut -d"=" -f2)
     PCS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.PCS_DBNAME|cut -d"=" -f2)
     MAN_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.MANUFACTURING_DBNAME|cut -d"=" -f2)
-    MANUF_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep atabase.MANUFACTURING_CLASSIC_DBNAME|cut -d"=" -f2)
+    MANUF_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.MANUFACTURING_CLASSIC_DBNAME|cut -d"=" -f2)
     MMS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.MATERIAL_MANAGEMENT_DBNAME|cut -d"=" -f2)
     QMS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.QUALITY_DBNAME|cut -d"=" -f2)
     TSS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.TSS_DBNAME|cut -d"=" -f2)
@@ -168,7 +154,7 @@ notes(){
     log_message "INFO" "${GREEN}Debug Mode, run the script like this${NC}"
     log_message "INFO" "    ${CYAN}DEBUG=Y $0 ${NC}"
     log_message "INFO" "${GREEN}##################################################################################################${NC}"
-    log_message "INFO" "${GREEN}USAGE to look at machines feedback, run the script like this${NC}"
+    log_message "INFO" "${YELLOW}USAGE to look at machines feedback, run the script like this${NC}"
     log_message "INFO" "    ${CYAN}ORDERNUMBER=[ordernumber] $0 ${NC}"
     log_message "INFO" "    ${CYAN}ORDERID=[orderId] $0 ${NC}"
     log_message "INFO" "    ${CYAN}JOBID=[jobId] $0 ${NC}"
@@ -401,6 +387,157 @@ health_check_csc_order() {
         log_message "INFO" "${GREEN}Completed verifying CSC with differencies in weight to shipping in the $CSC_DB, $MAN_DB & $PCS_DB dB${NC}"
 
         log_message "INFO" "${GREEN}CSC Order verification completed${NC}"
+    fi
+}
+
+#Checking the health of PCS Tables
+health_check_pcs_tables() {
+    if [ -z "$PCS_DB" ];then
+        log_message "INFO" "${CYAN}PCS kwsql file is unreadable${NC}"
+        return
+    else
+        log_message "INFO" "${GREEN}Starting PCS shadow tables verification tasks${NC}"
+
+        # Check for null finish_datetime in FACTRY table
+        local factryfinishednullcheck
+        factryfinishednullcheck=$(execute_mysql_query "SELECT IFNULL(COUNT(*), 0) FROM $PCS_DB.FACTRY WHERE finish_datetime = '1965-01-01 00:00:00';") || factryfinishednullcheck=0"${GREEN}NoErrorsFound${NC}"
+        if [[ $DEBUG == "N" ]];then
+            log_message "INFO" "${CYAN}Total records with factry finished datetime that are null $PCS_DB dB${NC}"
+            if [[ "$factryfinishednullcheck" -ne 0 ]];then
+                log_message "INFO" "${RED}$factryfinishednullcheck To see all run DEBUG mode${NC}"
+            fi
+        fi
+        if [[ "$factryfinishednullcheck" -ne 0 && $DEBUG == "Y" ]];then
+            local factryfinishednullcheckjobnumber
+            factryfinishednullcheckjobnumber=$(execute_mysql_query "SELECT job_number FROM $PCS_DB.FACTRY WHERE finish_datetime = '1965-01-01 00:00:00';") || factryfinishednullcheckjobnumber=0"${GREEN}NoErrorsFound${NC}"
+            echo -e "${RED}Jobs with NULL Finished Date in $PCS_DB.FACTRY table${NC}" #| expand -t10
+            # Extract the data and the rest of the string
+            echo "$factryfinishednullcheckjobnumber" > "$PROCESSID".tm
+            cat "$PROCESSID".tm
+        fi
+
+        # Check for null feedbackStatus and finishTime in feedback table
+        local feedbackstatusfinishednullcheck
+        feedbackstatusfinishednullcheck=$(execute_mysql_query "SELECT IFNULL(COUNT(*), 0) FROM $PCS_DB.feedback 
+                                                                WHERE feedbackStatus IS NULL AND finishTime IS NULL;") || feedbackstatusfinishednullcheck=0"${GREEN}NoErrorsFound${NC}"
+        if [[ $DEBUG == "N" ]];then
+            log_message "INFO" "${CYAN}Total records with feedback finished datetime that are null $PCS_DB dB${NC}"
+            if [[ "$feedbackstatusfinishednullcheck" -ne 0 ]];then
+                log_message "INFO" "${RED}$feedbackstatusfinishednullcheck To see all run DEBUG mode${NC}"
+            fi
+        fi
+        if [[ "$feedbackstatusfinishednullcheck" -ne 0 && $DEBUG == "Y" ]];then
+            local feedbackstatusfinishednullcheckjobnumber
+            feedbackstatusfinishednullcheckjobnumber=$(execute_mysql_query "SELECT f.objid AS feedbackId, f.lineupentry AS lineupEntryId, le.step AS stepId, s.orderNumber
+                                                                            FROM $PCS_DB.feedback f
+                                                                            LEFT JOIN $PCS_DB.lineupentry le ON le.objid = f.lineupentry
+                                                                            LEFT JOIN $PCS_DB.step s ON s.objid = le.step
+                                                                            WHERE feedbackStatus IS NULL AND finishTime IS NULL
+                                                                            ORDER BY s.orderNumber, s.jobNumber, s.stepNumber, f.objid;") || feedbackstatusfinishednullcheckjobnumber=0"${GREEN}NoErrorsFound${NC}"
+            echo -e "${RED}Jobs with NULL Status and Finished Date in $PCS_DB.feedback table${NC}" #| expand -t10
+            echo -e "${RED}feedbackId\tlineupEntryId\tstepId\torderNumber${NC}" | expand -t10,20,30,40,50
+            echo "$feedbackstatusfinishednullcheckjobnumber" > "$PROCESSID".tm
+            cat "$PROCESSID".tm
+        fi
+
+        local feedbackeffectivenullcheck
+        feedbackeffectivenullcheck=$(execute_mysql_query "SELECT IFNULL(COUNT(*), 0) FROM $PCS_DB.feedback 
+                                                                WHERE effectiveStartTime > effectiveFinishTime AND effectiveFinishTime IS NOT NULL;") || feedbackeffectivenullcheck=0"${GREEN}NoErrorsFound${NC}"
+        if [[ $DEBUG == "N" ]];then
+            log_message "INFO" "${CYAN}Total records with effective start time after finish time in $PCS_DB.feedback table${NC}"
+            if [[ "$feedbackeffectivenullcheck" -ne 0 ]];then
+                log_message "INFO" "${RED}$feedbackeffectivenullcheck To see all run DEBUG mode${NC}"
+            fi
+        fi
+        if [[ "$feedbackeffectivenullcheck" -ne 0 && $DEBUG == "Y" ]];then
+            local feedbackeffectivenullcheckjobnumber
+            feedbackeffectivenullcheckjobnumber=$(execute_mysql_query "SELECT f.objid AS feedbackId, f.lineupentry AS lineupEntryId, le.step AS stepId, s.orderNumber
+                                                                            FROM $PCS_DB.feedback f
+                                                                            LEFT JOIN $PCS_DB.lineupentry le ON le.objid = f.lineupentry
+                                                                            LEFT JOIN $PCS_DB.step s ON s.objid = le.step
+                                                                            WHERE effectiveStartTime > effectiveFinishTime AND effectiveFinishTime IS NOT NULL
+                                                                            ORDER BY s.orderNumber, s.jobNumber, s.stepNumber, f.objid;") || feedbackeffectivenullcheckjobnumber=0"${GREEN}NoErrorsFound${NC}"
+            echo -e "${RED}Jobs with effective start time after finish time in $PCS_DB.feedback table${NC}" #| expand -t10
+            echo -e "${RED}feedbackId\tlineupEntryId\tstepId\torderNumber${NC}" | expand -t10,20,30,40,50
+            echo "$feedbackeffectivenullcheckjobnumber" > "$PROCESSID".tm
+            cat "$PROCESSID".tm
+        fi
+
+        local stepstatuscheck
+        stepstatuscheck=$(execute_mysql_query "SELECT IFNULL(COUNT(*), 0) FROM $PCS_DB.feedback f
+                                                LEFT JOIN $PCS_DB.lineupentry le ON le.objid = f.lineupentry
+                                                LEFT JOIN $PCS_DB.step s ON s.objid = le.step
+                                                WHERE retired = 1 AND s.progressStatus = 'NOT_SCHEDULED';") || stepstatuscheck=0"${GREEN}NoErrorsFound${NC}"
+        if [[ "$DEBUG" == "N" ]];then
+            log_message "INFO" "${CYAN}Total records with step status not scheduled but retired in $PCS_DB.feedback table${NC}"
+            if [[ "$stepstatuscheck" -ne 0 ]];then
+                log_message "INFO" "${RED}$stepstatuscheck To see all run DEBUG mode${NC}"
+            fi
+        fi
+        if [[ "$stepstatuscheck" -ne 0 && "$DEBUG" == "Y" ]];then
+            local stepstatuscheckjobnumber
+            stepstatuscheckjobnumber=$(execute_mysql_query "SELECT f.objid AS feedbackId, f.lineupentry AS lineupEntryId, le.step AS stepId, s.orderNumber
+                                                                            FROM $PCS_DB.feedback f
+                                                                            LEFT JOIN $PCS_DB.lineupentry le ON le.objid = f.lineupentry
+                                                                            LEFT JOIN $PCS_DB.step s ON s.objid = le.step
+                                                                            WHERE retired = 1 AND s.progressStatus = 'NOT_SCHEDULED'
+                                                                            ORDER BY s.orderNumber, s.jobNumber, s.stepNumber, f.objid;") || stepstatuscheckjobnumber=0"${GREEN}NoErrorsFound${NC}"
+            echo -e "${RED}Jobs with step status not scheduled but retired in $PCS_DB.feedback table${NC}" #| expand -t10
+            echo -e "${RED}feedbackId\tlineupEntryId\tstepId\torderNumber${NC}" | expand -t10,20,30,40,50
+            echo "$stepstatuscheckjobnumber" > "$PROCESSID".tm
+            cat "$PROCESSID".tm
+        fi
+
+        local lineupstatuscheck
+        lineupstatuscheck=$(execute_mysql_query "SELECT IFNULL(COUNT(*), 0) FROM $PCS_DB.feedback f
+                                                LEFT JOIN $PCS_DB.lineupentry le ON le.objid = f.lineupentry
+                                                LEFT JOIN $PCS_DB.step s ON s.objid = le.step
+                                                WHERE retired = 1 AND le.progressStatus = 'NOT_SCHEDULED';") || lineupstatuscheck=0"${GREEN}NoErrorsFound${NC}"
+        if [[ "$DEBUG" == "N" ]];then
+            log_message "INFO" "${CYAN}Total records with lineup status not scheduled but retired in $PCS_DB.feedback table${NC}"
+            if [[ "$lineupstatuscheck" -ne 0 ]];then
+                log_message "INFO" "${RED}$lineupstatuscheck To see all run DEBUG mode${NC}"
+            fi
+        fi
+        if [[ "$lineupstatuscheck" -ne 0 && "$DEBUG" == "Y" ]];then
+            local lineupstatuscheckjobnumber
+            lineupstatuscheckjobnumber=$(execute_mysql_query "SELECT f.objid AS feedbackId, f.lineupentry AS lineupEntryId, le.step AS stepId, s.orderNumber
+                                                                            FROM $PCS_DB.feedback f
+                                                                            LEFT JOIN $PCS_DB.lineupentry le ON le.objid = f.lineupentry
+                                                                            LEFT JOIN $PCS_DB.step s ON s.objid = le.step
+                                                                            WHERE retired = 1 AND le.progressStatus = 'NOT_SCHEDULED'
+                                                                            ORDER BY le.orderNumber, s.jobNumber, s.stepNumber, f.objid;") || lineupstatuscheckjobnumber=0"${GREEN}NoErrorsFound${NC}"
+            echo -e "${RED}Jobs with lineup status not scheduled but retired in $PCS_DB.feedback table${NC}" #| expand -t10
+            echo -e "${RED}feedbackId\tlineupEntryId\tstepId\torderNumber${NC}" | expand -t10,20,30,40,50
+            echo "$lineupstatuscheckjobnumber" > "$PROCESSID".tm
+            cat "$PROCESSID".tm
+        fi
+
+        # Check for null stepAlternativePcsMachineIds in step table
+        local stepAlternatenullcheck
+        stepAlternatenullcheck=$(execute_mysql_query "select IFNULL(COUNT(*),0)
+                                                        FROM $PCS_DB.step WHERE retired = 0
+                                                        AND (stepAlternativePcsMachineIds IS NULL OR stepAlternativePcsMachineIds = '');") || stepAlternatenullcheck=0"${GREEN}NoErrorsFound${NC}"
+        if [[ "$DEBUG" == "N" ]];then
+            log_message "INFO" "${CYAN}Total records with stepAlternativePcsMachineIds that are null $PCS_DB dB${NC}"
+            if [[ "$stepAlternatenullcheck" -ne 0 ]];then
+                log_message "INFO" "${RED}$stepAlternatenullcheck To see all run DEBUG mode${NC}"
+            fi
+        fi
+        if [[ "$stepAlternatenullcheck" -ne 0 && "$DEBUG" == "Y" ]];then
+            local stepAlternatenullcheckjobnumber
+            stepAlternatenullcheckjobnumber=$(execute_mysql_query "select objid, orderNumber, jobNumber, stepNumber, progressStatus, currentStep,
+                                                                    stepAlternativePcsMachineIds, operationIds,retired
+                                                                    FROM $PCS_DB.step WHERE retired = 0
+                                                                    AND (stepAlternativePcsMachineIds IS NULL OR stepAlternativePcsMachineIds = '')
+                                                                    ORDER BY orderNumber, jobNumber, stepNumber;") || stepAlternatenullcheckjobnumber=0"${GREEN}NoErrorsFound${NC}"
+            echo -e "${RED}ADO 1064904 Jobs stepAlternativePcsMachineIds in $PCS_DB.step table${NC}" #| expand -t10
+            # Extract the data and the rest of the string
+            echo "$stepAlternatenullcheckjobnumber" > "$PROCESSID".tm
+            cat "$PROCESSID".tm
+        fi
+
+        log_message "INFO" "${GREEN}PCS tables verification completed${NC}"
     fi
 }
 
@@ -875,17 +1012,19 @@ main() {
     log_message "INFO" "${CYAN}Starting Health Check on the VUE systems${NC}"
 
     # Verify Heatlh CSC
-    health_check_csc_order
+    #health_check_csc_order
+    # Verify Heatlh PCS Tables
+    health_check_pcs_tables
     # Verify Heatlh PCS
     health_check_pcs_order
     # Verify Health RSS
-    health_check_rss
+    #health_check_rss
     # Verify Health ULT
-    health_check_ult
+    #health_check_ult
     # Verify Heatlh QMS
-    health_check_qms_order
+    # health_check_qms_order
     # Verify Heatlh TSS
-    health_check_tss_order
+    #health_check_tss_order
 
     #Verify PCS
     if [[ -n "$ORDERNUMBER" || -n "$ORDERID" || -n "$JOBID" ]];then
