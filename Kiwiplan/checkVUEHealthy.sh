@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Purpose: Verify and manage VUE application errors and data intergrity
-VERSION=2.4.0
+VERSION=2.6.0
 # Author : Steven F Ling
 # Credits for some of the scripts : Randolph Domingo, Devops Teams
 # Created: 2025-09-23
@@ -9,6 +9,8 @@ VERSION=2.4.0
 # Updated: 2025-11-09
 # Updated: 2026-04-05
 # Updated: 2026-08-21-23
+# Updated: 2026-08-24 - Added GitHub version check
+# Updated: 2026-08-24 - Email this run's log via sendmail on completion
 
 # Define color codes
 RED='\033[1;31m'
@@ -27,31 +29,90 @@ MAX_LOG_SIZE=$((5*1024*1024)) 			# 5MB
 LOG_DIR=$(dirname "$LOG_FILE")			# Path of logging directory
 PROCESSID=$(date +%Y%m%d_%k%M%S)        # Your own process ID
 
+# Email report configuration
+: "${MAILTO:=steve.ling@advantive.com}"		# Who receives the health check report
+RUN_LOG_START=1
+if [ -f "$LOG_FILE" ]; then
+    RUN_LOG_START=$(( $(wc -l < "$LOG_FILE") + 1 ))
+fi
+
 # Database credentials
 : "${DEBUG:=N}"					                                        # Debug Mode
 #: "${PLANTID:?Error: PLANTID is not supplied}"	                        # Dataset plantcode
-: "${PLANTID:$PLANTID}"				                                    # Dataset plantcode
+: "${PLANTID:=$PLANTID}"			                                    # Dataset plantcode
 : "${MYSQL_HOST:=localhost}"		                                    # MySQL host
 : "${MYSQL_USER:=$(grep "USER=" $DATA/kwsql|cut -d"=" -f2)}"			# MySQL username
 : "${MYSQL_PASSWORD:=$(grep "PASSWORD=" $DATA/kwsql|cut -d"=" -f2)}"	# MySQL password
 : "${ORDERNUMBER:=}"				                                    # Order Number to use
 : "${ORDERID:=}"				                                        # Order ID to use
 : "${JOBID:=}"					                                        # Job ID to use
+: "${KIWIBASE:=/opt/kiwi}"                                               # Kiwiplan base directory
+# Update check configuration
+REPO_RAW_URL="https://raw.githubusercontent.com/SFLServicesLLC/Scripts/main/Kiwiplan/checkVUEHealthy.sh"
+REPO_URL="https://github.com/SFLServicesLLC/Scripts/blob/main/Kiwiplan/checkVUEHealthy.sh"
+
+# VUE Log Path
+VUE_LOG_PATH="/${KIWIBASE}/services/sites/${PLANTID}/current/logs"
+
+# Ensure KIWIWBASE exists
+check_kiwibase() {
+    if [ ! -d "$KIWIBASE" ]; then
+        log_message "ERROR" "${RED}##################################################################################################${NC}"
+        log_message "ERROR" "${RED}KIWIBASE directory $KIWIBASE does not exist${NC}"
+        exit 1
+    else
+        log_message "INFO" "${GREEN}##################################################################################################${NC}"
+        log_message "INFO" "${CYAN}KIWIBASE directory $KIWIBASE exists${NC}"
+    fi
+}
+
+
+# Function to rotate log file
+rotate_log() {
+    if [ -f "$LOG_FILE" ] && [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || stat -c %s "$LOG_FILE")" -ge "$MAX_LOG_SIZE" ]; then
+        log_message "INFO" "${YELLOW}##################################################################################################${NC}"
+        log_message "INFO" "${YELLOW}Log file size exceeded $MAX_LOG_SIZE bytes, rotating log${NC}"
+        mv "$LOG_FILE" "${LOG_FILE}.$(date '+%Y%m%d%H%M%S')"
+        touch "$LOG_FILE"
+        log_message "INFO" "${CYAN}Log file rotated due to size exceeding $MAX_LOG_SIZE bytes"
+    fi
+}
+
+# Check to see if the PLANTID variable exists
+check_plantid() {
+    local var_name="$1"
+    local var_value="${!var_name}"
+    log_message "INFO" "${GREEN}Current version is: $VERSION${NC}"
+    
+
+    if [ -z "$PLANTID" ]; then
+        log_message "ERROR" "${RED}##################################################################################################${NC}"
+        log_message "ERROR" "${RED}$PLANTID is not setup or supplied.${NC}"
+        USAGE="PLANTID=maxco"
+        EXAMPLE="PLANTID=maxco $0"
+        USAGEDESC="This is a manditory field"
+            usage
+        exit 1
+    else
+        log_message "INFO" "${GREEN}##################################################################################################${NC}"
+        log_message "INFO" "${CYAN}$var_name is set to $var_value${NC}"
+    fi
+    
+}
 
 # Ensure log directory exists
 create_folders() {
-if [ ! -d "$LOG_FOLDER" ];then
-    log_message "INFO" "${YELLOW}Creating log folder $LOG_FOLDER${NC}"
-    mkdir -p "$LOG_FOLDER"
-else
-    log_message "INFO" "${GREEN}Log folder $LOG_DIR exists${NC}"
-fi
+    if [ ! -d "$LOG_FOLDER" ];then
+        log_message "INFO" "${YELLOW}Creating log folder $LOG_FOLDER${NC}"
+        mkdir -p "$LOG_FOLDER"
+    else
+        log_message "INFO" "${GREEN}Log folder $LOG_FOLDER exists${NC}"
+    fi
 }
 
 #Get dataset enviroment information
 get_environment() {
 
-    KIWIBASE=${KIWIBASE:-/opt/kiwi}
     PORTS=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep OFFSET|cut -d"=" -f2)
     CLASSIC=$(grep "DATA=" $DATA/kwsql|cut -d"=" -f2)
     CSC_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.CSC_DBNAME|cut -d"=" -f2)
@@ -90,30 +151,36 @@ log_message() {
     esac
 }
 
-# Function to rotate log file
-rotate_log() {
-    if [ -f "$LOG_FILE" ] && [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || stat -c %s "$LOG_FILE")" -ge "$MAX_LOG_SIZE" ]; then
-        mv "$LOG_FILE" "${LOG_FILE}.$(date '+%Y%m%d%H%M%S')"
-        touch "$LOG_FILE"
-        log_message "INFO" "${GREEN}Log file rotated due to size exceeding $MAX_LOG_SIZE bytes"
-    fi
-}
+# Function to email this run's log as an attachment via sendmail/Postfix
+send_report_email() {
+    local run_log="/tmp/${PROCESSID}_checkord_run.log"
+    tail -n +"$RUN_LOG_START" "$LOG_FILE" | sed -r 's/[\\]033\[[0-9;]*m//g' > "$run_log"
 
-# Check to see if the PLANTID variable exists
-check_plantid() {
-    local var_name="$1"
-    local var_value="${!var_name}"
-    log_message "INFO" "${GREEN}Current version is: $VERSION${NC}"
+    local subject="Check Health $HOSTNAME"
+    local boundary="====${PROCESSID}===="
 
-    if [ -z "$var_value" ]; then
-        log_message "ERROR" "${RED}$var_name is not supplied.${NC}"
-	USAGE="PLANTID=maxco"
-	EXAMPLE="PLANTID=maxco $0"
-	USAGEDESC="This is a manditory field"
-        usage
-	exit 1
-    fi
-    
+    {
+        echo "To: $MAILTO"
+        echo "Subject: $subject"
+        echo "MIME-Version: 1.0"
+        echo "Content-Type: multipart/mixed; boundary=\"$boundary\""
+        echo
+        echo "--$boundary"
+        echo "Content-Type: text/plain; charset=UTF-8"
+        echo
+        echo "Check Health $HOSTNAME"
+        echo
+        echo "--$boundary"
+        echo "Content-Type: text/plain; name=\"$(basename "$run_log")\""
+        echo "Content-Disposition: attachment; filename=\"$(basename "$run_log")\""
+        echo "Content-Transfer-Encoding: base64"
+        echo
+        base64 "$run_log"
+        echo
+        echo "--$boundary--"
+    } | sendmail -t
+
+    rm -f "$run_log"
 }
 
 # Function to display usage message
@@ -130,6 +197,31 @@ check_command() {
     if ! command -v "$cmd" &>/dev/null; then
         log_message "ERROR" "Required command $cmd not found"
         exit 1
+    fi
+}
+
+# Function to check GitHub for a newer version of this script
+check_for_updates() {
+    if ! command -v curl &>/dev/null; then
+        log_message "WARN" "${YELLOW}curl not found, skipping update check${NC}"
+        return
+    fi
+
+    local remote_version
+    remote_version=$(curl -fsS --max-time 10 "$REPO_RAW_URL" 2>/dev/null | grep -m1 '^VERSION=' | cut -d'=' -f2)
+
+    if [ -z "$remote_version" ]; then
+        log_message "WARN" "${YELLOW}Unable to check for updates (could not reach $REPO_RAW_URL)${NC}"
+        return
+    fi
+
+    if [ "$remote_version" != "$VERSION" ]; then
+        log_message "WARN" "${YELLOW}##################################################################################################${NC}"
+        log_message "WARN" "${YELLOW}A newer version of this script is available: $remote_version (currently running $VERSION)${NC}"
+        log_message "WARN" "${CYAN}   $REPO_URL${NC}"
+        log_message "WARN" "${YELLOW}##################################################################################################${NC}"
+    else
+        log_message "INFO" "${GREEN}Script is up to date (version $VERSION)${NC}"
     fi
 }
 
@@ -387,6 +479,29 @@ health_check_csc_order() {
         log_message "INFO" "${GREEN}Completed verifying CSC with differencies in weight to shipping in the $CSC_DB, $MAN_DB & $PCS_DB dB${NC}"
 
         log_message "INFO" "${GREEN}CSC Order verification completed${NC}"
+    fi
+}
+
+#check for bad data in PCS logs
+pcs_bad_data_log_check() {
+    if [ -z "$PCS_DB" ];then
+        log_message "INFO" "${CYAN}PCS log file is not available or unreadable${NC}"
+        return
+    else
+        log_message "INFO" "${GREEN}Starting PCS log check tasks${NC}"
+
+        local logcheckpathfilecheck
+        logcheckpathfilecheck=$("grep -i "Bad Data" "$VUE_LOG_PATH/pcs.log.txt" | head -1") || logcheckpath=0"${GREEN}NoErrorsFound${NC}"
+        if [[ $DEBUG == "N" ]];then
+            log_message "INFO" "${CYAN}JobIds with bad data in $VUE_LOG_PATH/pcs.log.txt ${NC}"
+            if [[ "$logcheckpathfilecheck" -ne 0 ]];then
+                log_message "INFO" "${RED}$logcheckpathfilecheck To see all run DEBUG mode${NC}"
+            fi
+        fi
+        if [[ "$logcheckpathfilecheck" -ne 0 && $DEBUG == "Y" ]];then
+            local logcheckpathfilecheckjobnumber
+
+        fi
     fi
 }
 
@@ -986,11 +1101,20 @@ handle_order_action() {
 # Main function
 main() {
     # Rotate log
-    #rotate_log
+    rotate_log
     #cd $HOME
-    #Validate any variables that MUST exist
+    
+    # Check is base direcotry exists
+    check_kiwibase
+    
+    # Validate any variables that MUST exist
     check_plantid "PLANTID"
+    
+    # Get the environment variables from the configuration file
     get_environment
+    
+    # Check if a newer version of this script is available
+    check_for_updates
 
     # Check for required commands
     check_command mysql
@@ -1012,19 +1136,19 @@ main() {
     log_message "INFO" "${CYAN}Starting Health Check on the VUE systems${NC}"
 
     # Verify Heatlh CSC
-    #health_check_csc_order
+    health_check_csc_order
     # Verify Heatlh PCS Tables
     health_check_pcs_tables
     # Verify Heatlh PCS
     health_check_pcs_order
     # Verify Health RSS
-    #health_check_rss
+    health_check_rss
     # Verify Health ULT
-    #health_check_ult
+    health_check_ult
     # Verify Heatlh QMS
-    # health_check_qms_order
+    health_check_qms_order
     # Verify Heatlh TSS
-    #health_check_tss_order
+    health_check_tss_order
 
     #Verify PCS
     if [[ -n "$ORDERNUMBER" || -n "$ORDERID" || -n "$JOBID" ]];then
@@ -1050,6 +1174,11 @@ main() {
     #rm $PROCESSID_*.tm
     #log_message "INFO" "${GREEN}Cleanup completed${NC}"
     log_message "INFO" "${GREEN}Finished Health Check on the VUE systems${NC}"
+
+    # Email this run's log to MAILTO
+    send_report_email
+    log_message "INFO" "${GREEN}Emailed health check log to $MAILTO${NC}"
+
     return 0
 }
 

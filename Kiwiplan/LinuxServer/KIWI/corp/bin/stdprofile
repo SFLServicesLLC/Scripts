@@ -61,11 +61,11 @@ export KCONF=${KCONF:-${KIWIBASE}/services/etl/kdw/current/kiwiplan/conf}
 
 # KEYCLOAK
 export KEYCLOAK_ADMIN=admin
-export KEYCLOAK_ADMIN_PASSWORD=admin1
+export KEYCLOAK_ADMIN_PASSWORD=XXXXX
 
-export PS1="\\[$(tput bold)\\]\\[$(tput setaf 1)\\]\\[$(tput setab 8)\\]
-"\\u\\[$(tput setaf 5)\\]@\\[$(tput setaf 1)\\]`hostname`"\\[$(tput setaf 2)\\] : ""`uname`"" : \\[$(tput setaf 6)\\]""\d \t : ""`echo $PLANTID`""
-"[\\w]'\$\[$(tput sgr0)\] '
+#export PS1="\\[$(tput bold)\\]\\[$(tput setaf 1)\\]\\[$(tput setab 8)\\]
+#"\\u\\[$(tput setaf 5)\\]@\\[$(tput setaf 1)\\]`hostname`"\\[$(tput setaf 2)\\] : ""`uname`"" : \\[$(tput setaf 6)\\]""\d \t : ""`echo $PLANTID`""
+#"[\\w]'\$\[$(tput sgr0)\] '
 export KWSQL_COMMONDIR=${KWSQL_COMMONDIR:-${DATA}}
 #export LANGUAGE=${LANGUAGE:-{KIWI_LANG}}
 export KWSQL_USER=${KWSQL_USER:-kiwisql}
