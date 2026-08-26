@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Purpose: Verify and manage VUE application errors and data intergrity
-VERSION=2.6.0
+VERSION=2.7.0
 # Author : Steven F Ling
 # Credits for some of the scripts : Randolph Domingo, Devops Teams
 # Created: 2025-09-23
@@ -11,6 +11,9 @@ VERSION=2.6.0
 # Updated: 2026-08-21-23
 # Updated: 2026-08-24 - Added GitHub version check
 # Updated: 2026-08-24 - Email this run's log via sendmail on completion
+# Updated: 2026-08-25 - Fixed display_step_details() (empty-db mysql failures, broken $PROCESSID_x.tm temp files, simplified O(n^2) loops)
+# Updated: 2026-08-25 - handle_order_action() no longer runs UPDATE statements; now logs the recommended fix for a human to apply
+# Updated: 2026-08-25 - Added recommend_job_fixes() to auto-detect and report close/open/run fixes for jobs with bad data
 
 # Define color codes
 RED='\033[1;31m'
@@ -25,12 +28,12 @@ FLASH='\033[5m'
 # Logging configuration
 LOG_FOLDER="/KIWI/corp/bin/"
 LOG_FILE="checkord.log"	# Log File
-MAX_LOG_SIZE=$((5*1024*1024)) 			# 5MB
+MAX_LOG_SIZE=$((1*1024*1024)) 			# 1MB
 LOG_DIR=$(dirname "$LOG_FILE")			# Path of logging directory
 PROCESSID=$(date +%Y%m%d_%k%M%S)        # Your own process ID
 
 # Email report configuration
-: "${MAILTO:=steve.ling@advantive.com}"		# Who receives the health check report
+: "${MAILTO:=}"		# Who receives the health check report separate with comma
 RUN_LOG_START=1
 if [ -f "$LOG_FILE" ]; then
     RUN_LOG_START=$(( $(wc -l < "$LOG_FILE") + 1 ))
@@ -42,7 +45,7 @@ fi
 : "${PLANTID:=$PLANTID}"			                                    # Dataset plantcode
 : "${MYSQL_HOST:=localhost}"		                                    # MySQL host
 : "${MYSQL_USER:=$(grep "USER=" $DATA/kwsql|cut -d"=" -f2)}"			# MySQL username
-: "${MYSQL_PASSWORD:=$(grep "PASSWORD=" $DATA/kwsql|cut -d"=" -f2)}"	# MySQL password
+: "${MYSQL_PASSWORD:=$(grep "PASSWORD=" $DATA/kwsql|cut -d"=" -f2-)}"	# MySQL password
 : "${ORDERNUMBER:=}"				                                    # Order Number to use
 : "${ORDERID:=}"				                                        # Order ID to use
 : "${JOBID:=}"					                                        # Job ID to use
@@ -53,80 +56,6 @@ REPO_URL="https://github.com/SFLServicesLLC/Scripts/blob/main/Kiwiplan/checkVUEH
 
 # VUE Log Path
 VUE_LOG_PATH="/${KIWIBASE}/services/sites/${PLANTID}/current/logs"
-
-# Ensure KIWIWBASE exists
-check_kiwibase() {
-    if [ ! -d "$KIWIBASE" ]; then
-        log_message "ERROR" "${RED}##################################################################################################${NC}"
-        log_message "ERROR" "${RED}KIWIBASE directory $KIWIBASE does not exist${NC}"
-        exit 1
-    else
-        log_message "INFO" "${GREEN}##################################################################################################${NC}"
-        log_message "INFO" "${CYAN}KIWIBASE directory $KIWIBASE exists${NC}"
-    fi
-}
-
-
-# Function to rotate log file
-rotate_log() {
-    if [ -f "$LOG_FILE" ] && [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || stat -c %s "$LOG_FILE")" -ge "$MAX_LOG_SIZE" ]; then
-        log_message "INFO" "${YELLOW}##################################################################################################${NC}"
-        log_message "INFO" "${YELLOW}Log file size exceeded $MAX_LOG_SIZE bytes, rotating log${NC}"
-        mv "$LOG_FILE" "${LOG_FILE}.$(date '+%Y%m%d%H%M%S')"
-        touch "$LOG_FILE"
-        log_message "INFO" "${CYAN}Log file rotated due to size exceeding $MAX_LOG_SIZE bytes"
-    fi
-}
-
-# Check to see if the PLANTID variable exists
-check_plantid() {
-    local var_name="$1"
-    local var_value="${!var_name}"
-    log_message "INFO" "${GREEN}Current version is: $VERSION${NC}"
-    
-
-    if [ -z "$PLANTID" ]; then
-        log_message "ERROR" "${RED}##################################################################################################${NC}"
-        log_message "ERROR" "${RED}$PLANTID is not setup or supplied.${NC}"
-        USAGE="PLANTID=maxco"
-        EXAMPLE="PLANTID=maxco $0"
-        USAGEDESC="This is a manditory field"
-            usage
-        exit 1
-    else
-        log_message "INFO" "${GREEN}##################################################################################################${NC}"
-        log_message "INFO" "${CYAN}$var_name is set to $var_value${NC}"
-    fi
-    
-}
-
-# Ensure log directory exists
-create_folders() {
-    if [ ! -d "$LOG_FOLDER" ];then
-        log_message "INFO" "${YELLOW}Creating log folder $LOG_FOLDER${NC}"
-        mkdir -p "$LOG_FOLDER"
-    else
-        log_message "INFO" "${GREEN}Log folder $LOG_FOLDER exists${NC}"
-    fi
-}
-
-#Get dataset enviroment information
-get_environment() {
-
-    PORTS=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep OFFSET|cut -d"=" -f2)
-    CLASSIC=$(grep "DATA=" $DATA/kwsql|cut -d"=" -f2)
-    CSC_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.CSC_DBNAME|cut -d"=" -f2)
-    PCS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.PCS_DBNAME|cut -d"=" -f2)
-    MAN_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.MANUFACTURING_DBNAME|cut -d"=" -f2)
-    MANUF_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.MANUFACTURING_CLASSIC_DBNAME|cut -d"=" -f2)
-    MMS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.MATERIAL_MANAGEMENT_DBNAME|cut -d"=" -f2)
-    QMS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.QUALITY_DBNAME|cut -d"=" -f2)
-    TSS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.TSS_DBNAME|cut -d"=" -f2)
-    PIC_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.PICS_DBNAME|cut -d"=" -f2)
-    PSL_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.LOCATION_COMMON_DBNAME|cut -d"=" -f2)
-    SUP_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.SUPPLIER_MANAGEMENT_DBNAME|cut -d"=" -f2)
-
-}
 
 # Function to handle logging
 log_message() {
@@ -151,12 +80,104 @@ log_message() {
     esac
 }
 
+# Function to execute MySQL query with error handling
+execute_mysql_query() {
+    local query="$1"
+    local db="$2"
+    local result
+    result=$(MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$db" -e "$query" 2>/dev/null | tail -n +2)
+    if [ $? -ne 0 ]; then
+        log_message "ERROR" "MySQL query failed: $query"
+        return 1
+    fi
+    echo "$result"
+    return 0
+}
+
+# Ensure KIWIWBASE exists
+check_kiwibase() {
+    if [ ! -d "$KIWIBASE" ]; then
+        log_message "ERROR" "${RED}##################################################################################################${NC}"
+        log_message "ERROR" "${RED}KIWIBASE directory $KIWIBASE does not exist${NC}"
+        exit 1
+    else
+        log_message "INFO" "${GREEN}##################################################################################################${NC}"
+        log_message "INFO" "${CYAN}KIWIBASE directory $KIWIBASE exists${NC}"
+    fi
+}
+
+# Function to rotate log file
+rotate_log() {
+    if [ -f "$LOG_FILE" ] && [ "$(stat -c %s "$LOG_FILE" 2>/dev/null || stat -f %z "$LOG_FILE")" -ge "$MAX_LOG_SIZE" ]; then
+        log_message "INFO" "${YELLOW}##################################################################################################${NC}"
+        log_message "INFO" "${YELLOW}Log file size exceeded $MAX_LOG_SIZE bytes, rotating log${NC}"
+        mv "$LOG_FILE" "${LOG_FILE}.$(date '+%Y%m%d%H%M%S')"
+        touch "$LOG_FILE"
+        log_message "INFO" "${CYAN}Log file rotated due to size exceeding $MAX_LOG_SIZE bytes"
+    fi
+}
+
+# Check to see if the PLANTID variable exists
+check_plantid() {
+    local var_name="$1"
+    local var_value="${!var_name}"
+    log_message "INFO" "${GREEN}##################################################################################################${NC}"
+    log_message "INFO" "${CYAN}Current version is: $VERSION${NC}"
+    
+
+    if [ -z "$PLANTID" ]; then
+        log_message "ERROR" "${RED}##################################################################################################${NC}"
+        log_message "ERROR" "${RED}$PLANTID is not setup or supplied.${NC}"
+        USAGE="PLANTID=maxco"
+        EXAMPLE="PLANTID=maxco $0"
+        USAGEDESC="This is a manditory field"
+            usage
+        exit 1
+    else
+        log_message "INFO" "${GREEN}##################################################################################################${NC}"
+        log_message "INFO" "${CYAN}$var_name is set to $var_value${NC}"
+    fi
+    
+}
+
+# Ensure log directory exists
+create_folders() {
+    if [ ! -d "$LOG_FOLDER" ];then
+        log_message "INFO" "${YELLOW}##################################################################################################${NC}"
+        log_message "INFO" "${YELLOW}Creating log folder $LOG_FOLDER${NC}"
+        mkdir -p "$LOG_FOLDER"
+    else
+        log_message "INFO" "${GREEN}##################################################################################################${NC}"
+        log_message "INFO" "${GREEN}Log folder $LOG_FOLDER exists${NC}"
+    fi
+}
+
+#Get dataset enviroment information
+get_environment() {
+
+    log_message "INFO" "${GREEN}##################################################################################################${NC}"
+    log_message "INFO" "${CYAN}Getting dataset enviroment information${NC}"
+    PORTS=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep OFFSET|cut -d"=" -f2)
+    CLASSIC=$(grep "DATA=" $DATA/kwsql|cut -d"=" -f2)
+    CSC_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.CSC_DBNAME|cut -d"=" -f2)
+    PCS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.PCS_DBNAME|cut -d"=" -f2)
+    MAN_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.MANUFACTURING_DBNAME|cut -d"=" -f2)
+    MANUF_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.MANUFACTURING_CLASSIC_DBNAME|cut -d"=" -f2)
+    MMS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.MATERIAL_MANAGEMENT_DBNAME|cut -d"=" -f2)
+    QMS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.QUALITY_DBNAME|cut -d"=" -f2)
+    TSS_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.TSS_DBNAME|cut -d"=" -f2)
+    PIC_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.PICS_DBNAME|cut -d"=" -f2)
+    PSL_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.LOCATION_COMMON_DBNAME|cut -d"=" -f2)
+    SUP_DB=$(cat $KIWIBASE/services/sites/"$PLANTID"/current/conf/recentparametervalues.properties|grep database.SUPPLIER_MANAGEMENT_DBNAME|cut -d"=" -f2)
+
+}
+
 # Function to email this run's log as an attachment via sendmail/Postfix
 send_report_email() {
-    local run_log="/tmp/${PROCESSID}_checkord_run.log"
+    local run_log="/tmp/${PLANTID}_${PROCESSID}_checkord_run.log"
     tail -n +"$RUN_LOG_START" "$LOG_FILE" | sed -r 's/[\\]033\[[0-9;]*m//g' > "$run_log"
 
-    local subject="Check Health $HOSTNAME"
+    local subject="Check Health $PLANTID $HOSTNAME"
     local boundary="====${PROCESSID}===="
 
     {
@@ -203,6 +224,7 @@ check_command() {
 # Function to check GitHub for a newer version of this script
 check_for_updates() {
     if ! command -v curl &>/dev/null; then
+        log_message "WARN" "${YELLOW}##################################################################################################${NC}"
         log_message "WARN" "${YELLOW}curl not found, skipping update check${NC}"
         return
     fi
@@ -211,11 +233,12 @@ check_for_updates() {
     remote_version=$(curl -fsS --max-time 10 "$REPO_RAW_URL" 2>/dev/null | grep -m1 '^VERSION=' | cut -d'=' -f2)
 
     if [ -z "$remote_version" ]; then
+        log_message "WARN" "${YELLOW}##################################################################################################${NC}"
         log_message "WARN" "${YELLOW}Unable to check for updates (could not reach $REPO_RAW_URL)${NC}"
         return
     fi
 
-    if [ "$remote_version" != "$VERSION" ]; then
+    if [ "$remote_version" != "$VERSION" ] && [ "$(printf '%s\n%s\n' "$VERSION" "$remote_version" | sort -V | tail -n1)" == "$remote_version" ]; then
         log_message "WARN" "${YELLOW}##################################################################################################${NC}"
         log_message "WARN" "${YELLOW}A newer version of this script is available: $remote_version (currently running $VERSION)${NC}"
         log_message "WARN" "${CYAN}   $REPO_URL${NC}"
@@ -223,20 +246,6 @@ check_for_updates() {
     else
         log_message "INFO" "${GREEN}Script is up to date (version $VERSION)${NC}"
     fi
-}
-
-# Function to execute MySQL query with error handling
-execute_mysql_query() {
-    local query="$1"
-    local db="$2"
-    local result
-    result=$(mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$db" -e "$query" 2>/dev/null | tail -n +2)
-    if [ $? -ne 0 ]; then
-        log_message "ERROR" "MySQL query failed: $query"
-        return 1
-    fi
-    echo "$result"
-    return 0
 }
 
 # Notes for the User
@@ -482,6 +491,43 @@ health_check_csc_order() {
     fi
 }
 
+#Look up step/job/order detail for a PCS jobid found in the bad data log
+get_pcs_jobid_detail() {
+    local jobid="$1"
+    local detail
+    log_message "INFO" "${GREEN}OrderID: ${CYAN}$order_id\t${GREEN}JobNumber: ${CYAN}$order_num\t${GREEN}Spec: ${CYAN}$spec\t${GREEN}JobID: ${CYAN}$job_id${NC}"
+    log_message "INFO" "${YELLOW}Checking JobId: ${CYAN}$job_id${NC}"
+    detail=$(execute_mysql_query "SELECT s.objid, s.orderNumber, j.dueTime, s.stepNumber, s.progressStatus, s.retired, alt.runDuration, alt.runDurationSource
+    , s.stepAlternativePcsMachineIds, s.operationIds, m.machineNumber, s.operationSource, j.progressStatus
+    , CASE
+        WHEN j.jobStatus = 7 THEN 'Fully Delivered'
+        WHEN j.jobStatus IN (18, 19, 20, 21) THEN 'Closed or Cancelled'
+        WHEN j.jobStatus IN (3, 4, 10) THEN 'Active, Review Required'
+        ELSE CONCAT('Unknown Status: ', j.jobStatus)
+    END AS jobStatusName
+    FROM $PCS_DB.step s
+    LEFT JOIN $PCS_DB.stepalternativepcsmachine alt
+        ON s.stepAlternativePcsMachineIds = alt.objid
+    LEFT JOIN $PCS_DB.pcsmachine pm
+        ON pm.objid = alt.pcsMachine
+    LEFT JOIN $MAN_DB.machine m
+        ON m.objid = pm.objid
+    LEFT JOIN $MAN_DB.job j
+        ON j.objid = s.jobId
+    WHERE s.orderNumber IN (SELECT orderNumber
+                                    FROM $MAN_DB._order
+                                    WHERE objid IN (SELECT _order
+                                                            FROM $MAN_DB.job
+                                                            WHERE objid = '$jobid'
+                                    ))
+    ORDER BY s.retired desc;") || detail="${CYAN}NoErrorsFound${NC}"
+    local header_line="ObjId\tOrderNumber\tDueDate\tStepNumber\tProgressStatus\tRetired\tRunDuration\tRunDurationSource\tAltPcsMachineIds\tOperationIds\tMachineNumber\tOperationSource\tJobProgressStatus\tJobStatusName"
+    echo -e "${RED}${header_line}${NC}" | expand -t7,20,30
+    echo -e "${header_line}" | expand -t7,20,30 >> "$LOG_FILE"
+    echo "$detail" > "$PROCESSID"_logcheckpathjobid_"$job_id".tm
+    cat "$PROCESSID"_logcheckpathjobid_"$job_id".tm | tee -a "$LOG_FILE"
+}
+
 #check for bad data in PCS logs
 pcs_bad_data_log_check() {
     if [ -z "$PCS_DB" ];then
@@ -491,16 +537,29 @@ pcs_bad_data_log_check() {
         log_message "INFO" "${GREEN}Starting PCS log check tasks${NC}"
 
         local logcheckpathfilecheck
-        logcheckpathfilecheck=$("grep -i "Bad Data" "$VUE_LOG_PATH/pcs.log.txt" | head -1") || logcheckpath=0"${GREEN}NoErrorsFound${NC}"
+        logcheckpathfilecheck=$(grep -i "Bad Data" "$VUE_LOG_PATH/pcs.log.txt" | head -1) || logcheckpathfilecheck=0"${GREEN}NoErrorsFound${NC}"
         if [[ $DEBUG == "N" ]];then
             log_message "INFO" "${CYAN}JobIds with bad data in $VUE_LOG_PATH/pcs.log.txt ${NC}"
-            if [[ "$logcheckpathfilecheck" -ne 0 ]];then
+            if [[ -n "$logcheckpathfilecheck" ]];then
                 log_message "INFO" "${RED}$logcheckpathfilecheck To see all run DEBUG mode${NC}"
             fi
         fi
-        if [[ "$logcheckpathfilecheck" -ne 0 && $DEBUG == "Y" ]];then
+        if [[ -n "$logcheckpathfilecheck" && $DEBUG == "Y" ]];then
             local logcheckpathfilecheckjobnumber
+            # Pull the jobids out from between the [ ] in the log line and load them into an array
+            logcheckpathfilecheckjobnumber=$(echo "$logcheckpathfilecheck" | grep -oP '(?<=\[)[^\]]*(?=\])')
+            IFS=', ' read -r -a logcheckpathjobidarray <<< "$logcheckpathfilecheckjobnumber"
 
+            log_message "INFO" "${CYAN}Found ${#logcheckpathjobidarray[@]} JobId(s) with bad data in $VUE_LOG_PATH/pcs.log.txt${NC}"
+
+            for logcheckpathjobid in "${logcheckpathjobidarray[@]}"; do
+                [[ -z "$logcheckpathjobid" ]] && continue
+                JOBID="$logcheckpathjobid"
+                read -r order_id order_num job_id < <(verify_pcs_order "$ORDERID" "$ORDERNUMBER" "$JOBID")
+                get_pcs_jobid_detail "$logcheckpathjobid"
+                display_step_details "$logcheckpathjobid"
+                recommend_job_fixes "$logcheckpathjobid" "$order_num"
+            done
         fi
     fi
 }
@@ -511,7 +570,7 @@ health_check_pcs_tables() {
         log_message "INFO" "${CYAN}PCS kwsql file is unreadable${NC}"
         return
     else
-        log_message "INFO" "${GREEN}Starting PCS shadow tables verification tasks${NC}"
+        log_message "INFO" "${YELLOW}Starting PCS shadow tables verification tasks${NC}"
 
         # Check for null finish_datetime in FACTRY table
         local factryfinishednullcheck
@@ -524,7 +583,7 @@ health_check_pcs_tables() {
         fi
         if [[ "$factryfinishednullcheck" -ne 0 && $DEBUG == "Y" ]];then
             local factryfinishednullcheckjobnumber
-            factryfinishednullcheckjobnumber=$(execute_mysql_query "SELECT job_number FROM $PCS_DB.FACTRY WHERE finish_datetime = '1965-01-01 00:00:00';") || factryfinishednullcheckjobnumber=0"${GREEN}NoErrorsFound${NC}"
+            factryfinishednullcheckjobnumber=$(execute_mysql_query "SELECT job_number, 'UPDATE $PCS_DB.FACTRY SET finish_datetime = ''' start_datetime ''' WHERE job_number = ''' job_number  ''' ' FROM $PCS_DB.FACTRY WHERE finish_datetime = '1965-01-01 00:00:00';") || factryfinishednullcheckjobnumber=0"${GREEN}NoErrorsFound${NC}"
             echo -e "${RED}Jobs with NULL Finished Date in $PCS_DB.FACTRY table${NC}" #| expand -t10
             # Extract the data and the rest of the string
             echo "$factryfinishednullcheckjobnumber" > "$PROCESSID".tm
@@ -970,85 +1029,85 @@ display_order_details() {
 
 # Function to display step details
 display_step_details() {
-    local job_id="$2"
-    local step_data step_line num_steps
-    num_steps=$(execute_mysql_query "SELECT COUNT(DISTINCT stepNumber) 
-        FROM $PCS_DB.step 
-        LEFT JOIN $PCS_DB.stepalternativepcsmachine alt 
-        ON step.stepAlternativePcsMachineIds=alt.objid WHERE jobId = '$job_id';")
+    local job_id="$1"
+    local num_steps
+    num_steps=$(execute_mysql_query "SELECT COUNT(DISTINCT stepNumber)
+        FROM $PCS_DB.step
+        LEFT JOIN $PCS_DB.stepalternativepcsmachine alt
+        ON step.stepAlternativePcsMachineIds=alt.objid WHERE jobId = '$job_id';" "$PCS_DB")
+
     local scount=1
     while [ "$scount" -le "$num_steps" ]; do
-	    step_line=$scount
-	    step_data=$(execute_mysql_query "SELECT step.objid 
-            FROM $PCS_DB.step 
-            LEFT JOIN $PCS_DB.stepalternativepcsmachine alt 
+        local step_data
+        step_data=$(execute_mysql_query "SELECT step.objid
+            FROM $PCS_DB.step
+            LEFT JOIN $PCS_DB.stepalternativepcsmachine alt
             ON step.stepAlternativePcsMachineIds=alt.objid WHERE stepNumber = $scount AND jobId = '$job_id';" "$PCS_DB")
-        local slcount=1
-        while [ "$slcount" -le "$(echo "$step_data"|wc -l)" ]; do
-            echo -e "\n${GREEN}LINEUP Entry Data for Step: ${CYAN}$step_line${YELLOW} - ObjID: ${CYAN}$(echo "$step_data"|head -$slcount|tail -1)${NC}"
+
+        local step_ids=()
+        mapfile -t step_ids <<< "$step_data"
+
+        local step_objid
+        for step_objid in "${step_ids[@]}"; do
+            [[ -z "$step_objid" ]] && continue
+            echo -e "\n${GREEN}LINEUP Entry Data for Step: ${CYAN}$scount${YELLOW} - ObjID: ${CYAN}$step_objid${NC}"
+
             local lineup_data
-            lineup_data=$(execute_mysql_query "SELECT COALESCE(le.objid,''), RPAD(COALESCE(progressStatus,''),15,' '), LPAD(COALESCE(m.oname,''),4,' '), RPAD(COALESCE(plannedQuantityProduced,''),10,' ') 
-            FROM lineupentry le INNER JOIN pcsmachine pm ON le.pcsMachine=pm.objid 
-            INNER JOIN $MAN_DB.machine m ON pm.machineId=m.objid WHERE step = $(echo "$step_data"|head -$slcount|tail -1);")
-            if [ -z "$lineup_data" ];then
-                echo -e "${RED}No LINEUP Entry Data found for StepObjectID: ${CYAN}$(echo "$step_data"|head -$slcount|tail -1)${NC}" > $PROCESSID_lineup.tm
-                cat $PROCESSID_lineup.tm
+            lineup_data=$(execute_mysql_query "SELECT COALESCE(le.objid,''), RPAD(COALESCE(progressStatus,''),15,' '), LPAD(COALESCE(m.oname,''),4,' '), RPAD(COALESCE(plannedQuantityProduced,''),10,' ')
+            FROM lineupentry le INNER JOIN pcsmachine pm ON le.pcsMachine=pm.objid
+            INNER JOIN $MAN_DB.machine m ON pm.machineId=m.objid WHERE step = $step_objid;" "$PCS_DB")
+
+            if [ -z "$lineup_data" ]; then
+                echo -e "${RED}No LINEUP Entry Data found for StepObjectID: ${CYAN}$step_objid${NC}"
             else
                 echo -e "${YELLOW}Objid\tStatus\t\tMachine\tQuantity${NC}"
-                echo "$lineup_data" > $PROCESSID_lineup.tm
-                cat $PROCESSID_lineup.tm
+                echo "$lineup_data"
             fi
-            
-            local linecount lcount linedata
-	        linecount=$(execute_mysql_query "SELECT COUNT(le.objid) 
-                FROM $PCS_DB.lineupentry le 
-                INNER JOIN $PCS_DB.pcsmachine pm ON le.pcsMachine=pm.objid 
-                INNER JOIN $MAN_DB.machine m ON pm.machineId=m.objid WHERE step = $(echo "$step_data"|head -$slcount|tail -1);")
-            local lcount=1
-            while [ "$lcount" -le "$linecount" ]; do
-                linedata=$(execute_mysql_query "SELECT le.objid 
-                    FROM $PCS_DB.lineupentry le 
-                    INNER JOIN $PCS_DB.pcsmachine pm ON le.pcsMachine=pm.objid 
-                    INNER JOIN $MAN_DB.machine m ON pm.machineId=m.objid WHERE step = $(echo "$step_data"|head -$slcount|tail -1);")
-                local ldcount=1
-                while [ "$ldcount" -le "$(echo "$linedata"|wc -l)" ]; do
-                    echo -e "${GREEN}FEEDBACK for LINE Entry ${CYAN}$(echo "$linedata"|head -$ldcount|tail -1)${NC}"
-                
-                    local feedback_data
-                    feedback_data=$(execute_mysql_query "SELECT RPAD(COALESCE(feedbackStatus,''),15,' '), objid, LPAD(COALESCE(FROM_UNIXTIME(startTime/1000),''),24,' '), 
-                    LPAD(COALESCE(FROM_UNIXTIME(SetupCompletionTime/1000),''),24,' '), LPAD(COALESCE(FROM_UNIXTIME(finishtime/1000),''),24,' '), 
-                    LPAD(COALESCE(ReportDate,''),10,' '), RPAD(COALESCE(shiftId,''),7,' '), explicitQuantityFedDuringRun, explicitQuantityProduced, derivedFeedback 
-                    FROM feedback WHERE lineupentry = $(echo "$linedata"|head -$ldcount|tail -1);" "$PCS_DB")
-                    if [ -z "$feedback_data" ];then
-                        echo -e "\n${RED}No FEEDBACK for LINE Entry found for LineupEntryObjectId: ${CYAN}$(echo "$linedata"|head -$ldcount|tail -1)${NC}"
-                        cat $PROCESSID_feedback.tm
-                    else
-                        echo -e "${YELLOW}Status\tOBJID\tStart Time\tSetup Time\tFinish Time\tReport_Shift\tShftId\tQ_Fed\tQ_Prd\tDerived${NC}" | expand -t22,26,30,62,94,126,142,150,158,166
-                        echo "$feedback_data" > $PROCESSID_feedback.tm
-                        cat $PROCESSID_feedback.tm
-                    fi
-                    
-                    local derived_id
-                    derived_id=$(execute_mysql_query "SELECT derivedFeedback FROM $PCS_DB.feedback WHERE lineupentry = $(echo "$linedata"|head -$ldcount|tail -1);")
-                    local derived_data
-                    derived_data=$(execute_mysql_query "SELECT RPAD(COALESCE('MDC Derived',''),15,' '), objid, COALESCE(FROM_UNIXTIME(detectedStartTime/1000),''), 
-                    COALESCE(FROM_UNIXTIME(detectedSetupFinishTime/1000),''), COALESCE(FROM_UNIXTIME(detectedFinishTime/1000),''), 
-                    '          ' ReportDate, '        ' ShiftId, detectedRunQuantityFed, detectedQuantityProduced, ' ' derivedFeedback 
-                    FROM derivedfeedback WHERE objid = '$derived_id';" "$PCS_DB")
-                    if [ -z "$derived_data" ];then
-                        echo -e "\n${RED}No DIREVEDFEEDBACK for LINE Entry found for LineupEntryObjectId: ${CYAN}$(echo "$linedata"|head -$ldcount|tail -1)${NC}"
-                        cat $PROCESSID_derived.tm
-                    else
-                        echo "$derived_data" > $PROCESSID_derived.tm
-                        cat $PROCESSID_derived.tm
-                    fi
-                ldcount=$((ldcount + 1))
-                done                
-            lcount=$((lcount + 1))
+
+            local linedata
+            linedata=$(execute_mysql_query "SELECT le.objid
+                FROM $PCS_DB.lineupentry le
+                INNER JOIN $PCS_DB.pcsmachine pm ON le.pcsMachine=pm.objid
+                INNER JOIN $MAN_DB.machine m ON pm.machineId=m.objid WHERE step = $step_objid;" "$PCS_DB")
+
+            local lineup_ids=()
+            mapfile -t lineup_ids <<< "$linedata"
+
+            local le_objid
+            for le_objid in "${lineup_ids[@]}"; do
+                [[ -z "$le_objid" ]] && continue
+                echo -e "${GREEN}FEEDBACK for LINE Entry ${CYAN}$le_objid${NC}"
+
+                local feedback_data
+                feedback_data=$(execute_mysql_query "SELECT RPAD(COALESCE(feedbackStatus,''),15,' '), objid, LPAD(COALESCE(FROM_UNIXTIME(startTime/1000),''),24,' '),
+                LPAD(COALESCE(FROM_UNIXTIME(SetupCompletionTime/1000),''),24,' '), LPAD(COALESCE(FROM_UNIXTIME(finishtime/1000),''),24,' '),
+                LPAD(COALESCE(ReportDate,''),10,' '), RPAD(COALESCE(shiftId,''),7,' '), explicitQuantityFedDuringRun, explicitQuantityProduced, derivedFeedback
+                FROM feedback WHERE lineupentry = $le_objid;" "$PCS_DB")
+
+                if [ -z "$feedback_data" ]; then
+                    echo -e "\n${RED}No FEEDBACK for LINE Entry found for LineupEntryObjectId: ${CYAN}$le_objid${NC}"
+                else
+                    echo -e "${YELLOW}Status\tOBJID\tStart Time\tSetup Time\tFinish Time\tReport_Shift\tShftId\tQ_Fed\tQ_Prd\tDerived${NC}" | expand -t22,26,30,62,94,126,142,150,158,166
+                    echo "$feedback_data"
+                fi
+
+                local derived_id
+                derived_id=$(execute_mysql_query "SELECT derivedFeedback FROM $PCS_DB.feedback WHERE lineupentry = $le_objid;" "$PCS_DB")
+
+                local derived_data
+                derived_data=$(execute_mysql_query "SELECT RPAD(COALESCE('MDC Derived',''),15,' '), objid, COALESCE(FROM_UNIXTIME(detectedStartTime/1000),''),
+                COALESCE(FROM_UNIXTIME(detectedSetupFinishTime/1000),''), COALESCE(FROM_UNIXTIME(detectedFinishTime/1000),''),
+                '          ' ReportDate, '        ' ShiftId, detectedRunQuantityFed, detectedQuantityProduced, ' ' derivedFeedback
+                FROM derivedfeedback WHERE objid = '$derived_id';" "$PCS_DB")
+
+                if [ -z "$derived_data" ]; then
+                    echo -e "\n${RED}No DIREVEDFEEDBACK for LINE Entry found for LineupEntryObjectId: ${CYAN}$le_objid${NC}"
+                else
+                    echo "$derived_data"
+                fi
             done
-        slcount=$((slcount + 1))
-        done                
-    scount=$((scount + 1))
+        done
+        scount=$((scount + 1))
     done
 }
 
@@ -1061,41 +1120,92 @@ handle_order_action() {
     local runduration="$5"
     local job_id="$6"
     local step="$7"
-    local date
-    date=$(date)
 
     case "${action,,}" in
         "close")
-            log_message "INFO" "Completing $order_num Lineupentry:$linedata Step:$step_data"
-            echo -e "${GREEN}$date: Completing $order_num Lineupentry:$linedata Step:$step_data${NC}"
-            execute_mysql_query "UPDATE step SET progressStatus='COMPLETED' WHERE objid=$step_data;" "$PCS_DB"
-            execute_mysql_query "UPDATE lineupentry SET progressStatus='COMPLETED' WHERE objid=$linedata;" "$PCS_DB"
+            log_message "WARN" "${YELLOW}Order $order_num Lineupentry:$linedata Step:$step_data should be COMPLETED. Run the following to fix it:${NC}"
+            log_message "WARN" "${CYAN}   UPDATE step SET progressStatus='COMPLETED' WHERE objid=$step_data;${NC}"
+            log_message "WARN" "${CYAN}   UPDATE lineupentry SET progressStatus='COMPLETED' WHERE objid=$linedata;${NC}"
             ;;
         "open")
-            log_message "INFO" "Opening $order_num Lineupentry:$linedata Step:$step_data"
-            echo -e "${GREEN}$date: Opening $order_num Lineupentry:$linedata Step:$step_data${NC}"
-            execute_mysql_query "UPDATE step SET progressStatus='NOT_SCHEDULED' WHERE objid=$step_data;" "$PCS_DB"
-            execute_mysql_query "UPDATE lineupentry SET progressStatus='NOT_SCHEDULED' WHERE objid=$linedata;" "$PCS_DB"
+            log_message "WARN" "${YELLOW}Order $order_num Lineupentry:$linedata Step:$step_data should be NOT_SCHEDULED. Run the following to fix it:${NC}"
+            log_message "WARN" "${CYAN}   UPDATE step SET progressStatus='NOT_SCHEDULED' WHERE objid=$step_data;${NC}"
+            log_message "WARN" "${CYAN}   UPDATE lineupentry SET progressStatus='NOT_SCHEDULED' WHERE objid=$linedata;${NC}"
             ;;
         "run")
             local alter_data
             alter_data=$(execute_mysql_query "SELECT stepAlternativePcsMachineIds FROM step LEFT JOIN stepalternativepcsmachine alt ON step.stepAlternativePcsMachineIds=alt.objid WHERE jobId = '$job_id' AND step.stepNumber='$step';" "$PCS_DB" | grep -v "objid" | tr "," "\n")
-            echo "$alter_data" > $PROCESSID_alter.tm
-            while IFS= read -r alter; do
-                if [ -n "$alter" ]; then
-                    execute_mysql_query "UPDATE stepalternativepcsmachine SET runDuration='$runduration' WHERE objid = '$alter';" "$PCS_DB"
-                    execute_mysql_query "UPDATE stepalternativepcsmachine SET runDurationSource='USER' WHERE objid = '$alter';" "$PCS_DB"
-                    log_message "INFO" "Updating $order_num speed on Alternative:$alter Step:$step to Run:$runduration USER"
-                    echo -e "${GREEN}$date: Updating $order_num speed on Alternative:$alter Step:$step to Run:$runduration USER${NC}"
-                fi
-            done < $PROCESSID_alter.tm
+
+            local alter_ids=()
+            mapfile -t alter_ids <<< "$alter_data"
+
+            local alter
+            for alter in "${alter_ids[@]}"; do
+                [[ -z "$alter" ]] && continue
+                log_message "WARN" "${YELLOW}Order $order_num Step:$step Alternative:$alter run duration should be $runduration. Run the following to fix it:${NC}"
+                log_message "WARN" "${CYAN}   UPDATE stepalternativepcsmachine SET runDuration='$runduration' WHERE objid='$alter';${NC}"
+                log_message "WARN" "${CYAN}   UPDATE stepalternativepcsmachine SET runDurationSource='USER' WHERE objid='$alter';${NC}"
+            done
             ;;
         *)
             log_message "ERROR" "Invalid action: $action"
-            echo -e "${RED}Invalid action: $action${NC}"
             exit 1
             ;;
     esac
+}
+
+# Function to recommend the best available fix(es) for a job flagged with bad data.
+# Reuses the same retired/progressStatus mismatch conditions as health_check_pcs_tables.
+recommend_job_fixes() {
+    local job_id="$1"
+    local order_num="$2"
+
+    # close: step & lineupentry both retired but never marked COMPLETED
+    local close_candidate
+    close_candidate=$(execute_mysql_query "SELECT s.objid, s.stepNumber, le.objid
+        FROM $PCS_DB.step s
+        INNER JOIN $PCS_DB.lineupentry le ON le.step = s.objid
+        WHERE s.jobId = '$job_id' AND s.retired = 1 AND s.progressStatus = 'NOT_SCHEDULED'
+        AND le.retired = 1 AND le.progressStatus = 'NOT_SCHEDULED'
+        ORDER BY s.stepNumber LIMIT 1;" "$PCS_DB")
+    if [[ -n "$close_candidate" ]]; then
+        local step_objid step_number line_objid
+        read -r step_objid step_number line_objid <<< "$close_candidate"
+        handle_order_action "$order_num" "$step_objid" "$line_objid" "close" "" "$job_id" "$step_number"
+    fi
+
+    # open: lineupentry marked COMPLETED but no feedback finishTime was ever recorded
+    local open_candidate
+    open_candidate=$(execute_mysql_query "SELECT s.objid, s.stepNumber, le.objid
+        FROM $PCS_DB.lineupentry le
+        INNER JOIN $PCS_DB.step s ON s.objid = le.step
+        WHERE s.jobId = '$job_id' AND le.progressStatus = 'COMPLETED'
+        AND NOT EXISTS (SELECT 1 FROM $PCS_DB.feedback f WHERE f.lineupentry = le.objid AND f.finishTime IS NOT NULL)
+        ORDER BY s.stepNumber LIMIT 1;" "$PCS_DB")
+    if [[ -n "$open_candidate" ]]; then
+        local step_objid step_number line_objid
+        read -r step_objid step_number line_objid <<< "$open_candidate"
+        handle_order_action "$order_num" "$step_objid" "$line_objid" "open" "" "$job_id" "$step_number"
+    fi
+
+    # run: alternative machine has no runDuration but a measured derivedfeedback duration exists
+    local run_candidate
+    run_candidate=$(execute_mysql_query "SELECT s.stepNumber, TIMESTAMPDIFF(MINUTE, FROM_UNIXTIME(df.detectedSetupFinishTime/1000), FROM_UNIXTIME(df.detectedFinishTime/1000))
+        FROM $PCS_DB.step s
+        INNER JOIN $PCS_DB.stepalternativepcsmachine alt ON alt.objid = s.stepAlternativePcsMachineIds
+        INNER JOIN $PCS_DB.lineupentry le ON le.step = s.objid
+        INNER JOIN $PCS_DB.feedback f ON f.lineupentry = le.objid
+        INNER JOIN $PCS_DB.derivedfeedback df ON df.objid = f.derivedFeedback
+        WHERE s.jobId = '$job_id' AND COALESCE(alt.runDuration,0) = 0
+        AND df.detectedSetupFinishTime IS NOT NULL AND df.detectedFinishTime IS NOT NULL
+        ORDER BY s.stepNumber LIMIT 1;" "$PCS_DB")
+    if [[ -n "$run_candidate" ]]; then
+        local step_number measured_minutes
+        read -r step_number measured_minutes <<< "$run_candidate"
+        if [[ "$measured_minutes" =~ ^[0-9]+$ ]] && [ "$measured_minutes" -gt 0 ]; then
+            handle_order_action "$order_num" "" "" "run" "$measured_minutes" "$job_id" "$step_number"
+        fi
+    fi
 }
 
 # Main function
@@ -1135,39 +1245,45 @@ main() {
     log_message "INFO" "${GREEN}##################################################################################################${NC}"
     log_message "INFO" "${CYAN}Starting Health Check on the VUE systems${NC}"
 
-    # Verify Heatlh CSC
-    health_check_csc_order
-    # Verify Heatlh PCS Tables
-    health_check_pcs_tables
-    # Verify Heatlh PCS
-    health_check_pcs_order
-    # Verify Health RSS
-    health_check_rss
-    # Verify Health ULT
-    health_check_ult
-    # Verify Heatlh QMS
-    health_check_qms_order
-    # Verify Heatlh TSS
-    health_check_tss_order
-
-    #Verify PCS
+    #Verify PCS Manually
     if [[ -n "$ORDERNUMBER" || -n "$ORDERID" || -n "$JOBID" ]];then
        
-       log_message "INFO" "${YELLOW}Starting PCS verification task${NC}"
-       read -r order_id order_num job_id < <(verify_pcs_order "$ORDERID" "$ORDERNUMBER" "$JOBID")
-       # Display order details
-       display_order_details "$order_id" "$order_num" "$job_id"
-       # Handle step details if provided
-       display_step_details "$num_steps" "$job_id"
-       # Handle actions for updates and ect.. if provided
-       if [ -n "" ]; then
-          local step_data
-          step_data=$(head -n 1 $PROCESSID_steps.tm | cut -c1-6 | tr -d " ")
-          local linedata
-          linedata=$(head -n 1 $PROCESSID_lineup.tm | cut -c1-6 | tr -d " ")
-          handle_order_action "$order_num" "$step_data" "$linedata" "$3" "$4" "$job_id" "$2"
-       fi
-       log_message "INFO" "${GREEN}PCS Order verification completed for $order_num${NC}"
+        log_message "INFO" "${YELLOW}Starting Manual PCS Steps verification${NC}"
+        read -r order_id order_num job_id < <(verify_pcs_order "$ORDERID" "$ORDERNUMBER" "$JOBID")
+        # Display order details
+        get_pcs_jobid_detail "$job_id"
+        #display_order_details "$order_id" "$order_num" "$job_id"
+        # Handle step details if provided
+        #display_step_details "$num_steps" "$job_id"
+        # Handle actions for updates and ect.. if provided
+        if [ -n "" ]; then
+            local step_data
+            step_data=$(head -n 1 $PROCESSID_steps.tm | cut -c1-6 | tr -d " ")
+            local linedata
+            linedata=$(head -n 1 $PROCESSID_lineup.tm | cut -c1-6 | tr -d " ")
+            handle_order_action "$order_num" "$step_data" "$linedata" "$3" "$4" "$job_id" "$2"
+        fi
+        log_message "INFO" "${GREEN}PCS Order verification completed for $order_num${NC}"
+
+       else
+    
+        # Verify Heatlh PCS Logs
+        pcs_bad_data_log_check
+        # Verify Heatlh CSC
+        health_check_csc_order
+        # Verify Heatlh PCS Tables
+        health_check_pcs_tables
+        # Verify Heatlh PCS
+        health_check_pcs_order
+        # Verify Health RSS
+        health_check_rss
+        # Verify Health ULT
+        health_check_ult
+        # Verify Heatlh QMS
+        health_check_qms_order
+        # Verify Heatlh TSS
+        health_check_tss_order
+
     fi
 
     #log_message "INFO" "${YELLOW}Cleaning up my working files called $PROCESSID_*.tm${NC}"

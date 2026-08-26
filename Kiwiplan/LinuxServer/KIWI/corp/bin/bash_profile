@@ -761,7 +761,7 @@ install_mysql() {
   echo "INTERFACE=sql" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
   echo "USER=$MYSQL_USER" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
   echo "PASSWORD=$MYSQL_PWD" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql 
-  #   echo "PASSWORDX=XXXXX" >> /KIWI/site_$NEW_SITE/data_$NEW_SITE/kwsql   
+  #   echo "PASSWORDX=XXXXX" >> /KIWI/site_$NEW_SITE/data_$NEW_SITE/kwsql
   echo "LOG=error" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
   echo "LOGPID=1" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
   echo "CHARSET=latin1" >> $KIWIBASE/site_"$NEW_SITE"/data_"$NEW_SITE"/kwsql
