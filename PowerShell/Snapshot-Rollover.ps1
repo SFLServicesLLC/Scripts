@@ -171,12 +171,16 @@ else {
 # ------------------------------------------------------------------
 # Two different ways to exclude VMs from being processed:
 #
-# 1) Set a vCenter Custom Attribute on the VM called "ignore.snaps" = 1
-#    (Managed via: vSphere Client > VM > Summary > Custom Attributes,
-#    or New-CustomAttribute / Set-Annotation in PowerCLI.)
-#    NOTE: this is checked via Get-Annotation below - it is NOT the same
-#    thing as VM Advanced Settings/ExtraConfig, so make sure the
-#    attribute is actually created as a Custom Attribute in vCenter.
+# 1) Set "ignore.snaps" = 1 on the VM, via EITHER of these (Test-VMIgnoreSnaps
+#    below checks both):
+#      a) VM Advanced Setting / ExtraConfig - vSphere Client > VM > Edit Settings
+#         > Advanced > Configuration Parameters > Add Configuration Params, or
+#         New-AdvancedSetting -Entity $vm -Name ignore.snaps -Value 1
+#      b) a vCenter Custom Attribute named "ignore.snaps" - vSphere Client > VM >
+#         Summary > Custom Attributes, or New-CustomAttribute / Set-Annotation.
+#         The Custom Attribute path only works if the "ignore.snaps" attribute
+#         type has actually been created in vCenter (see the one-time check
+#         after Connect-VIServer below).
 #
 # 2) Edit the JSON file below - exact names and/or wildcard patterns.
 $exclusionConfigPath = "C:\Scripts\Snapshot-Exclusions.json"
@@ -205,17 +209,29 @@ function Test-VMExcluded {
     return $false
 }
 
-function Test-VMIgnoreSnapsAttribute {
+function Test-VMIgnoreSnaps {
     param($VM)
-    if (-not $script:IgnoreSnapsAttrExists) { return $false }
+
+    # 1) VM Advanced Setting / ExtraConfig: "ignore.snaps" = 1
+    #    (vSphere Client > VM > Edit Settings > Advanced > Configuration Parameters,
+    #     or: New-AdvancedSetting -Entity $vm -Name ignore.snaps -Value 1)
     try {
-        $attr = Get-Annotation -Entity $VM -CustomAttribute "ignore.snaps" -ErrorAction Stop
-        return ($attr.Value -eq "1")
+        $adv = Get-AdvancedSetting -Entity $VM -Name "ignore.snaps" -ErrorAction SilentlyContinue
+        if ($adv -and ("$($adv.Value)".Trim() -eq "1")) { return $true }
     }
-    catch {
-        # Attribute type exists globally but isn't set on this particular VM - not excluded
-        return $false
+    catch { }
+
+    # 2) vCenter Custom Attribute: "ignore.snaps" = 1
+    #    (only queried if that attribute type actually exists in this vCenter)
+    if ($script:IgnoreSnapsAttrExists) {
+        try {
+            $attr = Get-Annotation -Entity $VM -Name "ignore.snaps" -ErrorAction SilentlyContinue
+            if ($attr -and ("$($attr.Value)".Trim() -eq "1")) { return $true }
+        }
+        catch { }
     }
+
+    return $false
 }
 
 # ------------------------------------------------------------------
@@ -260,14 +276,16 @@ try {
     Write-Log -Message "Connected to $viServer"
 
     # Check once whether the "ignore.snaps" Custom Attribute type exists in this
-    # vCenter at all, so we don't throw/catch a terminating error for every VM.
+    # vCenter at all, so Test-VMIgnoreSnaps can skip the per-VM Get-Annotation
+    # call when it doesn't. The VM Advanced Setting (ExtraConfig) check in
+    # Test-VMIgnoreSnaps works regardless of this.
     $script:IgnoreSnapsAttrExists = $false
     try {
         $null = Get-CustomAttribute -Name "ignore.snaps" -ErrorAction Stop
         $script:IgnoreSnapsAttrExists = $true
     }
     catch {
-        Write-Log -Level WARN -Message "Custom Attribute 'ignore.snaps' is not defined in vCenter - only JSON-based exclusions will apply. Create it via New-CustomAttribute -Name 'ignore.snaps' -TargetType VirtualMachine if you want per-VM exclusion."
+        Write-Log -Level INFO -Message "Custom Attribute 'ignore.snaps' is not defined in vCenter - per-VM exclusion relies on the VM Advanced Setting 'ignore.snaps=1' (ExtraConfig) and the JSON exclusion list. Create the attribute via New-CustomAttribute -Name 'ignore.snaps' -TargetType VirtualMachine if you also want the Custom Attribute path."
     }
 
     foreach ($vm in Get-VM | Sort-Object Name) {
@@ -290,8 +308,8 @@ try {
             continue
         }
 
-        if (Test-VMIgnoreSnapsAttribute -VM $vm) {
-            Write-VMStatus -VMName $vm.Name -Status Skip -StatusText "ignore.snaps=1 (custom attribute)"
+        if (Test-VMIgnoreSnaps -VM $vm) {
+            Write-VMStatus -VMName $vm.Name -Status Skip -StatusText "ignore.snaps=1 (advanced setting or custom attribute)"
             $results += [PSCustomObject]@{
                 VM                   = $vm.Name
                 DataCentre           = $null
